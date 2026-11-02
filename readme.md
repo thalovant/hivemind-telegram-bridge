@@ -64,6 +64,11 @@ Private chats need no mention. Pass `--no-require-mention` to forward every
 group message the bot receives (Telegram only delivers them all when the
 bot's privacy mode is off).
 
+Each Telegram chat is one conversation on the hub, so in a group one
+person's follow-up ("and tomorrow?") continues whatever the last person
+asked. Pass `--session-scope person` to give each person their own
+conversation in each chat.
+
 Useful flags:
 
 - `--site-id`: this bridge's HiveMind site id. If you run more than one
@@ -85,6 +90,7 @@ host could read it:
 | `--token` | `TELEGRAM_BOT_TOKEN` |
 | `--allowed-chat` | `TELEGRAM_ALLOWED_CHATS` (ids separated by commas) |
 | `--no-require-mention` | `TELEGRAM_REQUIRE_MENTION` (`true`/`false`) |
+| `--session-scope` | `TELEGRAM_SESSION_SCOPE` (`chat`/`person`) |
 | `--access-key` | `HIVEMIND_ACCESS_KEY` |
 | `--password` | `HIVEMIND_PASSWORD` |
 | `--host` | `HIVEMIND_HOST` |

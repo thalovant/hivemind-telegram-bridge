@@ -22,6 +22,7 @@ ENVIRONMENT = {
     "token": "TELEGRAM_BOT_TOKEN",
     "allowed_chats": "TELEGRAM_ALLOWED_CHATS",
     "require_mention": "TELEGRAM_REQUIRE_MENTION",
+    "session_scope": "TELEGRAM_SESSION_SCOPE",
     "key": "HIVEMIND_ACCESS_KEY",
     "password": "HIVEMIND_PASSWORD",
     "host": "HIVEMIND_HOST",
@@ -39,11 +40,13 @@ _TRUE = {"1", "true", "yes", "on"}
 def connect_telegram_to_hivemind(token, key=None, password=None,
                                  host=None, port=5678, self_signed=False,
                                  lang="en-us", site_id="telegram",
-                                 allowed_chats=None, require_mention=True):
+                                 allowed_chats=None, require_mention=True,
+                                 session_scope="chat"):
     bridge = HiveMindTelegramBridge(
         token=token, key=key, password=password, host=host, port=port,
         self_signed=self_signed, lang=lang, site_id=site_id,
         allowed_chats=allowed_chats, require_mention=require_mention,
+        session_scope=session_scope,
     )
     bridge.start()
     return bridge
@@ -53,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Bridge a Telegram bot to a HiveMind node",
         epilog="Every option falls back to an environment variable "
-               "(TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHATS, TELEGRAM_REQUIRE_MENTION, "
+               "(TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHATS, TELEGRAM_REQUIRE_MENTION, TELEGRAM_SESSION_SCOPE, "
                "HIVEMIND_ACCESS_KEY, HIVEMIND_PASSWORD, HIVEMIND_HOST, "
                "HIVEMIND_PORT, HIVEMIND_SITE_ID, HIVEMIND_SELF_SIGNED, "
                "HIVEMIND_LANG). The token, access key and password also "
@@ -69,6 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
                         action="store_false", default=None,
                         help="in a group, forward every message, not only those "
                              "that mention the bot or reply to it")
+    parser.add_argument("--session-scope", choices=("chat", "person"), default=None,
+                        help="one hub conversation per chat (default) or per "
+                             "person in each chat")
     # HiveMind
     parser.add_argument("--access-key", dest="key", default=None,
                         help="HiveMind access key (default: from identity file)")
@@ -151,6 +157,10 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
         setting = environ.get(ENVIRONMENT["require_mention"])
         require_mention = True if not setting else setting.lower() in _TRUE
 
+    session_scope = pick("session_scope") or "chat"
+    if session_scope not in ("chat", "person"):
+        parser.error("TELEGRAM_SESSION_SCOPE must be 'chat' or 'person'")
+
     host = pick("host")
     if host and not host.startswith("ws://") and not host.startswith("wss://"):
         host = "ws://" + host
@@ -166,6 +176,7 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
         "site_id": pick("site_id") or "telegram",
         "allowed_chats": allowed_chats,
         "require_mention": require_mention,
+        "session_scope": session_scope,
     }
 
 

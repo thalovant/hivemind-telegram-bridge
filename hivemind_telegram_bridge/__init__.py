@@ -59,6 +59,12 @@ DEFAULT_HANDSHAKE_MAX_RETRIES = 10
 #: Chat types where several people talk and the bot is one participant.
 GROUP_CHAT_TYPES = frozenset({"group", "supergroup", "channel"})
 
+#: How conversations are kept apart on the hub. ``chat``: one session per
+#: Telegram chat, shared by everyone in a group. ``person``: one session per
+#: person in each chat, so in a group each person's follow-up questions
+#: continue their own conversation.
+SESSION_SCOPES = ("chat", "person")
+
 
 class HiveMindTelegramBridge:
     """Bridge a Telegram bot to a HiveMind node."""
@@ -75,6 +81,7 @@ class HiveMindTelegramBridge:
                  allowed_chats: Optional[Iterable[int]] = None,
                  handshake_max_retries: int = DEFAULT_HANDSHAKE_MAX_RETRIES,
                  require_mention: bool = True,
+                 session_scope: str = "chat",
                  *,
                  client: Optional[HiveMessageBusClient] = None,
                  app: Optional[Application] = None):
@@ -97,6 +104,9 @@ class HiveMindTelegramBridge:
             chats are always forwarded. With Telegram's privacy mode turned
             off a bot receives every message in a group, and without this
             the hub would be asked about every one of them.
+        session_scope: ``"chat"`` (one hub session per Telegram chat) or
+            ``"person"`` (one per person in each chat). In a private chat
+            the two are the same conversation.
         client: pre-built HiveMessageBusClient (tests / advanced setups).
             NOTE: HiveMessageBusClient does NOT open a connection in
             __init__ -- call start() (or connect_hivemind()) to connect.
@@ -110,6 +120,10 @@ class HiveMindTelegramBridge:
         self.allowed_chats = set(allowed_chats) if allowed_chats else None
         self.handshake_max_retries = handshake_max_retries
         self.require_mention = require_mention
+        if session_scope not in SESSION_SCOPES:
+            raise ValueError(f"session_scope must be one of {SESSION_SCOPES}, "
+                             f"not {session_scope!r}")
+        self.session_scope = session_scope
 
         self.app: Application = app or ApplicationBuilder().token(token).build()
         self.app.add_handler(
@@ -278,10 +292,16 @@ class HiveMindTelegramBridge:
                 "chat_id": chat_id,
                 "user": {"telegram_username": username,
                         "telegram_user_id": sender.id if sender else None},
-                "session": {"session_id": f"telegram-{chat_id}"},
+                "session": {"session_id": self.session_id(chat_id, sender)},
             },
         )
         self.client.emit(HiveMessage(HiveMessageType.BUS, msg))
+
+    def session_id(self, chat_id: int, sender) -> str:
+        """The hub session a message from ``sender`` in ``chat_id`` belongs to."""
+        if self.session_scope == "person" and sender is not None:
+            return f"telegram-{chat_id}-{sender.id}"
+        return f"telegram-{chat_id}"
 
     # ------------------------------------------------------------------
     # HiveMind -> Telegram
