@@ -1,3 +1,19 @@
+# This is the Thalovant fork
+
+The rules in this section win over anything below them, which is upstream's
+guidance kept for context:
+
+- Default branch is `main`. Branch from `main`, open a PR into `main`.
+- Commit under your own identity; the upstream identity rule does not apply.
+- Nothing here publishes to PyPI or to upstream's registry. CI
+  (`.github/workflows/ci.yml`) tests every PR and, on `main`, publishes a
+  signed image to `ghcr.io/thalovant/hivemind-telegram-bridge`.
+- Every change keeps a test that fails without it and passes with it.
+- Update QUICK_FACTS.md, FAQ.md, MAINTENANCE_REPORT.md, AUDIT.md and
+  SUGGESTIONS.md with every change.
+
+---
+
 # AGENTS.md — `hivemind-telegram-bridge`
 
 Guidance for AI coding agents (and humans) working in this repository. Read it
