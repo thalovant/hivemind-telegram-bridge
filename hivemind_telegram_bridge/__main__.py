@@ -21,6 +21,7 @@ from hivemind_telegram_bridge import HiveMindTelegramBridge
 ENVIRONMENT = {
     "token": "TELEGRAM_BOT_TOKEN",
     "allowed_chats": "TELEGRAM_ALLOWED_CHATS",
+    "require_mention": "TELEGRAM_REQUIRE_MENTION",
     "key": "HIVEMIND_ACCESS_KEY",
     "password": "HIVEMIND_PASSWORD",
     "host": "HIVEMIND_HOST",
@@ -38,11 +39,11 @@ _TRUE = {"1", "true", "yes", "on"}
 def connect_telegram_to_hivemind(token, key=None, password=None,
                                  host=None, port=5678, self_signed=False,
                                  lang="en-us", site_id="telegram",
-                                 allowed_chats=None):
+                                 allowed_chats=None, require_mention=True):
     bridge = HiveMindTelegramBridge(
         token=token, key=key, password=password, host=host, port=port,
         self_signed=self_signed, lang=lang, site_id=site_id,
-        allowed_chats=allowed_chats,
+        allowed_chats=allowed_chats, require_mention=require_mention,
     )
     bridge.start()
     return bridge
@@ -52,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Bridge a Telegram bot to a HiveMind node",
         epilog="Every option falls back to an environment variable "
-               "(TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHATS, "
+               "(TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHATS, TELEGRAM_REQUIRE_MENTION, "
                "HIVEMIND_ACCESS_KEY, HIVEMIND_PASSWORD, HIVEMIND_HOST, "
                "HIVEMIND_PORT, HIVEMIND_SITE_ID, HIVEMIND_SELF_SIGNED, "
                "HIVEMIND_LANG). The token, access key and password also "
@@ -64,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
                         action="append", type=int, default=None,
                         help="Telegram chat id allowed to talk to the bridge "
                              "(repeatable); default: any chat the bot is in")
+    parser.add_argument("--no-require-mention", dest="require_mention",
+                        action="store_false", default=None,
+                        help="in a group, forward every message, not only those "
+                             "that mention the bot or reply to it")
     # HiveMind
     parser.add_argument("--access-key", dest="key", default=None,
                         help="HiveMind access key (default: from identity file)")
@@ -141,6 +146,11 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
     if self_signed is None:
         self_signed = str(environ.get(ENVIRONMENT["self_signed"], "")).lower() in _TRUE
 
+    require_mention = args.require_mention
+    if require_mention is None:
+        setting = environ.get(ENVIRONMENT["require_mention"])
+        require_mention = True if not setting else setting.lower() in _TRUE
+
     host = pick("host")
     if host and not host.startswith("ws://") and not host.startswith("wss://"):
         host = "ws://" + host
@@ -155,6 +165,7 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
         "lang": pick("lang") or "en-us",
         "site_id": pick("site_id") or "telegram",
         "allowed_chats": allowed_chats,
+        "require_mention": require_mention,
     }
 
 

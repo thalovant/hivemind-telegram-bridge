@@ -28,6 +28,7 @@ recurring bug across every HiveMind bridge written so far:
   this bridge cannot do that step itself. See the README.
 """
 import asyncio
+import re
 import threading
 from typing import Iterable, Optional
 
@@ -55,6 +56,9 @@ platform = "HiveMindTelegramBridgeV0.1"
 # (down, wrong password) fails fast instead of hanging the bridge.
 DEFAULT_HANDSHAKE_MAX_RETRIES = 10
 
+#: Chat types where several people talk and the bot is one participant.
+GROUP_CHAT_TYPES = frozenset({"group", "supergroup", "channel"})
+
 
 class HiveMindTelegramBridge:
     """Bridge a Telegram bot to a HiveMind node."""
@@ -70,6 +74,7 @@ class HiveMindTelegramBridge:
                  site_id: str = "telegram",
                  allowed_chats: Optional[Iterable[int]] = None,
                  handshake_max_retries: int = DEFAULT_HANDSHAKE_MAX_RETRIES,
+                 require_mention: bool = True,
                  *,
                  client: Optional[HiveMessageBusClient] = None,
                  app: Optional[Application] = None):
@@ -87,6 +92,11 @@ class HiveMindTelegramBridge:
         handshake_max_retries: bounds how many times ``connect()`` retries
             the HiveMind handshake before giving up. ``None`` retries
             forever, which hangs the bridge on a stalled/unreachable hub.
+        require_mention: in a group, forward only messages that mention
+            the bot (``@botname``) or reply to one of its messages. Private
+            chats are always forwarded. With Telegram's privacy mode turned
+            off a bot receives every message in a group, and without this
+            the hub would be asked about every one of them.
         client: pre-built HiveMessageBusClient (tests / advanced setups).
             NOTE: HiveMessageBusClient does NOT open a connection in
             __init__ -- call start() (or connect_hivemind()) to connect.
@@ -99,6 +109,7 @@ class HiveMindTelegramBridge:
         self.site_id = site_id
         self.allowed_chats = set(allowed_chats) if allowed_chats else None
         self.handshake_max_retries = handshake_max_retries
+        self.require_mention = require_mention
 
         self.app: Application = app or ApplicationBuilder().token(token).build()
         self.app.add_handler(
@@ -213,12 +224,46 @@ class HiveMindTelegramBridge:
             LOG.debug(f"ignoring message from non-allowed chat {chat.id}")
             return
 
+        text = self.addressed_text(message, chat)
+        if text is None:
+            return
+
         if not self._connected.is_set():
             LOG.warning("dropping Telegram message, not connected to "
                        "HiveMind yet")
             return
 
-        self.forward_to_hivemind(message.text, sender, chat.id)
+        self.forward_to_hivemind(text, sender, chat.id)
+
+    def addressed_text(self, message, chat) -> Optional[str]:
+        """The text to forward, or ``None`` when the message is not for the bot.
+
+        The bot's ``@username`` is removed wherever it appears: in a group a
+        question reads "@botname what time is it", and the mention is not
+        part of what was asked. In a group, with ``require_mention``, a
+        message that neither mentions the bot nor replies to it is not
+        addressed to the bot at all.
+        """
+        username = getattr(self.app.bot, "username", None)
+        text = message.text
+        mentioned = False
+        if isinstance(username, str) and username:
+            pattern = re.compile(rf"(?<![\w@])@{re.escape(username)}\b", re.IGNORECASE)
+            text, count = pattern.subn(" ", text)
+            mentioned = count > 0
+            text = " ".join(text.split())
+        if not text:
+            return None
+        if self.require_mention and getattr(chat, "type", None) in GROUP_CHAT_TYPES:
+            if not (mentioned or self._replies_to_bot(message)):
+                return None
+        return text
+
+    def _replies_to_bot(self, message) -> bool:
+        replied = getattr(message, "reply_to_message", None)
+        author = getattr(replied, "from_user", None) if replied is not None else None
+        bot_id = getattr(self.app.bot, "id", None)
+        return author is not None and bot_id is not None and getattr(author, "id", None) == bot_id
 
     def forward_to_hivemind(self, text: str, sender, chat_id: int) -> None:
         username = (sender.username if sender and sender.username

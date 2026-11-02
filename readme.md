@@ -57,6 +57,13 @@ By default the bridge answers any chat it has been added to or that
 messages it directly. Pass `--allowed-chat <chat_id>` (repeatable) to
 restrict it to specific chats.
 
+In a group, the bridge forwards only messages that mention the bot
+(`@botname what time is it`) or reply to one of its messages, and removes
+the mention before forwarding, so the hub is asked `what time is it`.
+Private chats need no mention. Pass `--no-require-mention` to forward every
+group message the bot receives (Telegram only delivers them all when the
+bot's privacy mode is off).
+
 Useful flags:
 
 - `--site-id`: this bridge's HiveMind site id. If you run more than one
@@ -77,6 +84,7 @@ host could read it:
 | --- | --- |
 | `--token` | `TELEGRAM_BOT_TOKEN` |
 | `--allowed-chat` | `TELEGRAM_ALLOWED_CHATS` (ids separated by commas) |
+| `--no-require-mention` | `TELEGRAM_REQUIRE_MENTION` (`true`/`false`) |
 | `--access-key` | `HIVEMIND_ACCESS_KEY` |
 | `--password` | `HIVEMIND_PASSWORD` |
 | `--host` | `HIVEMIND_HOST` |

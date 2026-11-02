@@ -31,6 +31,7 @@ def test_everything_can_come_from_the_environment():
         "lang": "fr-fr",
         "site_id": "kitchen",
         "allowed_chats": [42, -100123],
+        "require_mention": True,
     }
 
 
@@ -90,3 +91,9 @@ def test_the_image_passes_no_secret_on_the_command_line():
     for secret in ("--token", "--password", "--access-key", "$TELEGRAM_BOT_TOKEN",
                    "$HIVEMIND_PASSWORD"):
         assert secret not in entrypoint
+
+
+def test_mention_gating_is_on_by_default_and_can_be_turned_off():
+    assert resolve_options(["--token", "tok"], {})["require_mention"] is True
+    assert resolve_options(["--token", "tok", "--no-require-mention"], {})["require_mention"] is False
+    assert resolve_options(["--token", "tok"], {"TELEGRAM_REQUIRE_MENTION": "false"})["require_mention"] is False
