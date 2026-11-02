@@ -69,6 +69,26 @@ Useful flags:
 
 Run `hivemind-telegram-bridge --help` for the full list.
 
+Every flag also falls back to an environment variable, so the bridge can
+run with no secret on its command line, where any other process on the
+host could read it:
+
+| Flag | Variable |
+| --- | --- |
+| `--token` | `TELEGRAM_BOT_TOKEN` |
+| `--allowed-chat` | `TELEGRAM_ALLOWED_CHATS` (ids separated by commas) |
+| `--access-key` | `HIVEMIND_ACCESS_KEY` |
+| `--password` | `HIVEMIND_PASSWORD` |
+| `--host` | `HIVEMIND_HOST` |
+| `--port` | `HIVEMIND_PORT` |
+| `--site-id` | `HIVEMIND_SITE_ID` |
+| `--self-signed` | `HIVEMIND_SELF_SIGNED` (`true`/`false`) |
+| `--lang` | `HIVEMIND_LANG` |
+
+The token, access key and password also accept `<VARIABLE>_FILE`, the
+path of a file holding the value, which is how container platforms mount
+secrets. A flag wins over its variable, and the variable over its file.
+
 ## Docker
 
 ```bash
@@ -83,6 +103,11 @@ docker run --rm \
 
 or via `docker-compose.yml` — copy it, fill in the environment section,
 and `docker compose up`.
+
+The image runs as an unprivileged user and keeps the HiveMind identity in
+`/home/bridge/.config/hivemind`. Mount a volume there so the identity
+survives a restart: the hub pins the identity's key, and a new one on
+every start is refused.
 
 ## What this bridge does, precisely
 
