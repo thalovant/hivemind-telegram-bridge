@@ -1,3 +1,5 @@
+Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: settings from the environment and secret files, mention gating, per-person sessions, health endpoints.
+
 # HiveMind Telegram Bridge
 
 This bridges a Telegram bot to a HiveMind node. A HiveMind bridge is a

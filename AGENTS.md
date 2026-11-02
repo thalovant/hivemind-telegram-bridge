@@ -1,3 +1,27 @@
+# This is the Thalovant fork
+
+The rules in this section win over anything below them, which is upstream's
+guidance kept for context:
+
+- Default branch is `main`. Branch from `main`, open a PR into `main`.
+- Commit under your own identity; the upstream identity rule does not apply.
+- Nothing here publishes to PyPI or to upstream's registry. CI
+  (`.github/workflows/ci.yml`) tests every PR and, on `main`, publishes a
+  signed image to `ghcr.io/thalovant/hivemind-telegram-bridge`.
+- Every change to the bridge's behaviour keeps a test that fails without it
+  and passes with it. A documentation or workflow change has no behaviour to
+  test: it is validated by the build, the lint selection and, for the
+  workflow, a CI run on the pull request.
+- Update QUICK_FACTS.md, FAQ.md, MAINTENANCE_REPORT.md, AUDIT.md and
+  SUGGESTIONS.md with every change.
+- Every Markdown file starts with a `Last Edit: <author> - <date> - Motive:
+  <summary>` line, and MAINTENANCE_REPORT.md entries are dated and carry a
+  transparency report for AI-assisted work. This is the Thalovant workspace
+  convention and replaces upstream's "timeless text, no dates" rule below for
+  this fork's documentation.
+
+---
+
 # AGENTS.md — `hivemind-telegram-bridge`
 
 Guidance for AI coding agents (and humans) working in this repository. Read it
