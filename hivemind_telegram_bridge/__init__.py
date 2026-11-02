@@ -334,7 +334,9 @@ class HiveMindTelegramBridge:
         if self._loop is None:
             LOG.warning("Telegram loop not running yet, dropping reply")
             return
-        LOG.debug(f"Sending message to Telegram chat {chat_id}: {text}")
+        # The length, never the text: replies carry what people asked about,
+        # and a debug log is kept, shipped and read far more widely than the chat.
+        LOG.debug(f"Sending message to Telegram chat {chat_id}: {len(text)} characters")
         future = asyncio.run_coroutine_threadsafe(
             self.app.bot.send_message(chat_id=chat_id, text=text), self._loop
         )
