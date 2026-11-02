@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Thalovant fork set up: fixes on main, Thalovant CI and signed images, docs set added.
+Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Address the CI and documentation review: publish from main only, sign before :latest, pinned audit evidence, qualified claims.
 
 # Maintenance report: hivemind-telegram-bridge
 
@@ -11,9 +11,9 @@ Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Thalovant fork set up: fixes o
 3. Optional per-person hub sessions (`--session-scope person`).
 4. Reply text no longer logged at debug level.
 5. Optional `/healthz` and `/readyz` (`--health-port`).
-6. Inherited upstream workflows (release, publish, image push to upstream's registry) removed; `.github/workflows/ci.yml` added (tests, lint, image smoke test, signed image on `main`); docs set added.
+6. Inherited upstream workflows (release, publish, image push to upstream's registry) removed; `.github/workflows/ci.yml` added (tests, lint, image smoke test; on `main` only, the image is pushed under `:sha-<commit>`, signed and verified by digest, and only then tagged `:latest`); docs set added.
 
-**Rationale:** run the bridge as a managed workload: no secrets in process arguments, no message text in logs, no forwarding of conversations not addressed to the bot, and probes a platform can use.
+**Rationale:** run the bridge as a managed workload: no secrets in process arguments, no message text in logs, no forwarding of conversations not addressed to the bot while mention gating is on (the default; `--no-require-mention` forwards every message the bot receives), and probes a platform can use.
 
 **Verification**
 

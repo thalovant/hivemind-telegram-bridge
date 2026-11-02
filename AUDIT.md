@@ -1,8 +1,8 @@
-Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Thalovant fork set up: fixes on main, Thalovant CI and signed images, docs set added.
+Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Address the CI and documentation review: publish from main only, sign before :latest, pinned audit evidence, qualified claims.
 
 # Audit: hivemind-telegram-bridge
 
-Evidence: `python -m pytest tests -q` (44 passed, 2026-11-02, Python 3.12) and reading the code at `main`.
+Evidence: `python -m pytest tests -q` (44 passed, 2026-11-02, Python 3.12) and reading the code at commit `cb7ca5f5e458` (the line numbers below refer to it).
 
 ## 1. Every chat is allowed unless an allow-list is set
 
