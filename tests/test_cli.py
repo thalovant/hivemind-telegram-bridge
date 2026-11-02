@@ -21,6 +21,7 @@ def test_everything_can_come_from_the_environment():
         "HIVEMIND_SELF_SIGNED": "true",
         "HIVEMIND_LANG": "fr-fr",
         "TELEGRAM_SESSION_SCOPE": "person",
+        "BRIDGE_HEALTH_PORT": "8080",
     })
     assert options == {
         "token": "tok",
@@ -34,6 +35,7 @@ def test_everything_can_come_from_the_environment():
         "allowed_chats": [42, -100123],
         "require_mention": True,
         "session_scope": "person",
+        "health_port": 8080,
     }
 
 

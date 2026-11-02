@@ -39,6 +39,8 @@ from hivemind_bus_client import (
 )
 from ovos_bus_client.message import Message
 from ovos_utils.log import LOG
+
+from hivemind_telegram_bridge.health import HealthServer
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -82,6 +84,7 @@ class HiveMindTelegramBridge:
                  handshake_max_retries: int = DEFAULT_HANDSHAKE_MAX_RETRIES,
                  require_mention: bool = True,
                  session_scope: str = "chat",
+                 health_port: Optional[int] = None,
                  *,
                  client: Optional[HiveMessageBusClient] = None,
                  app: Optional[Application] = None):
@@ -107,6 +110,8 @@ class HiveMindTelegramBridge:
         session_scope: ``"chat"`` (one hub session per Telegram chat) or
             ``"person"`` (one per person in each chat). In a private chat
             the two are the same conversation.
+        health_port: if set, serve ``/healthz`` and ``/readyz`` on this
+            port (see :mod:`hivemind_telegram_bridge.health`).
         client: pre-built HiveMessageBusClient (tests / advanced setups).
             NOTE: HiveMessageBusClient does NOT open a connection in
             __init__ -- call start() (or connect_hivemind()) to connect.
@@ -139,6 +144,9 @@ class HiveMindTelegramBridge:
             self_signed=self_signed,
         )
 
+        self.health_port = health_port
+        self._health: Optional[HealthServer] = None
+        self._polling = threading.Event()
         self._started = False
         self._connected = threading.Event()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -172,6 +180,9 @@ class HiveMindTelegramBridge:
         if self._started:
             return
         self._started = True
+        if self.health_port is not None:
+            self._health = HealthServer(self.health_port, self.ready)
+            self._health.start()
         self.connect_hivemind()
         LOG.warning(
             "a freshly registered HiveMind client is denied every message "
@@ -188,10 +199,12 @@ class HiveMindTelegramBridge:
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling()
+        self._polling.set()
         LOG.info("== listening to Telegram")
         try:
             await self._stop_event.wait()
         finally:
+            self._polling.clear()
             await self.app.updater.stop()
             await self.app.stop()
             await self.app.shutdown()
@@ -206,6 +219,23 @@ class HiveMindTelegramBridge:
             LOG.exception("error closing HiveMind client")
         self._started = False
         self._connected.clear()
+        if self._health is not None:
+            self._health.stop()
+            self._health = None
+
+    def ready(self) -> bool:
+        """Whether a message can go end to end right now.
+
+        The HiveMind session must be live, not just once established: the
+        client clears its handshake event when the connection drops and sets
+        it again on reconnect. And Telegram must be polled, by an updater
+        that is still running.
+        """
+        handshake = getattr(self.client, "handshake_event", None)
+        hub_up = self._connected.is_set() and (handshake is None or handshake.is_set())
+        updater = getattr(self.app, "updater", None)
+        polling = self._polling.is_set() and bool(getattr(updater, "running", True))
+        return bool(hub_up and polling)
 
     # ------------------------------------------------------------------
     # Telegram -> HiveMind
