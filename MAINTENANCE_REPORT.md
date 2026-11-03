@@ -32,7 +32,9 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token re
   | message read -> `recognizer_loop:utterance` emitted, median | 0.7 ms | 2-3 ms (hop to the hub-send thread) |
   | message read -> "typing…" requested, median | none | 2.9 ms |
 
-- Not verified: a live Telegram bot, a live hub, CI on GitHub for this branch (runs on the pull request), the image build.
+- Live check against Telegram's Bot API, not committed as a test: a made-up well-formed token through the real stack gives `TokenRejected` in 1.9 s (401), a malformed one in 0.3 s (404).
+- Image built locally with podman: `--help` lists `--reply-timeout`, runs as uid 10001, refuses to start without a token and names `TELEGRAM_BOT_TOKEN`, the package imports on a read-only root filesystem.
+- Not verified: a live Telegram bot with a real token, a live hub, CI on GitHub for this branch (runs on the pull request).
 
 **Transparency report**
 
