@@ -32,6 +32,7 @@ import logging
 import re
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
@@ -47,6 +48,7 @@ from ovos_bus_client.message import Message
 from ovos_utils.log import LOG
 
 from hivemind_telegram_bridge.health import HealthServer
+from hivemind_telegram_bridge.lines import NO_ANSWER, bridge_line
 from telegram import Update
 from telegram.error import InvalidToken, TelegramError
 from telegram.ext import (
@@ -79,6 +81,12 @@ SESSION_SCOPES = ("chat", "person")
 #: answered: Telegram keeps a bot's messages for up to 24 hours while it is
 #: down, and a reply to a question asked long before means nothing any more.
 MAX_MESSAGE_AGE = 120
+
+#: How many people's languages are remembered for the bridge's own lines.
+LANGUAGES_KEPT = 4096
+
+#: ovos-core's "no skill could answer" and the name older hubs relayed it under.
+INTENT_FAILURE_TYPES = ("complete_intent_failure", "hive.complete_intent_failure")
 
 #: What the bridge writes to the termination log when Telegram refuses the
 #: bot token, so the platform can ask for a new token instead of restarting
@@ -242,6 +250,10 @@ class HiveMindTelegramBridge:
         # the order the hub spoke them; different chats do not wait for
         # each other. Only touched on the Telegram loop.
         self._chat_sends: Dict[int, List] = {}
+        # session id -> the sender's Telegram language_code, for the lines
+        # the bridge says itself; written on the loop, read on the bus thread.
+        self._languages: "OrderedDict[str, str]" = OrderedDict()
+        self._languages_lock = threading.Lock()
 
     def _build_application(self, token: str) -> Application:
         """The Telegram Application, on a transport that reports a rejected token.
@@ -277,8 +289,8 @@ class HiveMindTelegramBridge:
         self.client.connect(site_id=self.site_id,
                            handshake_max_retries=self.handshake_max_retries)
         self.client.on_mycroft("speak", self.handle_speak)
-        self.client.on_mycroft("hive.complete_intent_failure",
-                               self.handle_intent_failure)
+        for msg_type in INTENT_FAILURE_TYPES:
+            self.client.on_mycroft(msg_type, self.handle_intent_failure)
         self._connected.set()
         LOG.info("== connected to HiveMind")
 
@@ -479,6 +491,8 @@ class HiveMindTelegramBridge:
         """
         username = (sender.username if sender and sender.username
                    else str(sender.id) if sender else "unknown")
+        session_id = self.session_id(chat_id, sender)
+        self._remember_language(session_id, getattr(sender, "language_code", None))
         msg = Message(
             "recognizer_loop:utterance",
             {"utterances": [text], "lang": self.lang},
@@ -489,10 +503,30 @@ class HiveMindTelegramBridge:
                 "chat_id": chat_id,
                 "user": {"telegram_username": username,
                         "telegram_user_id": sender.id if sender else None},
-                "session": {"session_id": self.session_id(chat_id, sender)},
+                "session": {"session_id": session_id},
             },
         )
         self.client.emit(HiveMessage(HiveMessageType.BUS, msg))
+
+    def _remember_language(self, session_id: str, language_code) -> None:
+        if not isinstance(language_code, str) or not language_code:
+            return
+        with self._languages_lock:
+            self._languages[session_id] = language_code
+            self._languages.move_to_end(session_id)
+            while len(self._languages) > LANGUAGES_KEPT:
+                self._languages.popitem(last=False)
+
+    def line(self, kind: str, session_id: Optional[str] = None) -> str:
+        """A line the bridge says itself (see :mod:`hivemind_telegram_bridge.lines`).
+
+        In the language of the person it answers, when their Telegram app
+        told it (``language_code``) and there is a line in it, else in
+        ``lang`` (``HIVEMIND_LANG``), else in English.
+        """
+        with self._languages_lock:
+            spoken = self._languages.get(session_id) if session_id else None
+        return bridge_line(kind, spoken, self.lang)
 
     def session_id(self, chat_id: int, sender) -> str:
         """The hub session a message from ``sender`` in ``chat_id`` belongs to."""
@@ -513,11 +547,18 @@ class HiveMindTelegramBridge:
         self.speak(utterance, chat_id)
 
     def handle_intent_failure(self, message: Message) -> None:
+        """No skill could answer: say so, in the person's language.
+
+        The one bridge-authored reply to a hub message: the hub sent no
+        utterance to relay. Current hubs relay ovos-core's
+        ``complete_intent_failure``; older ones sent
+        ``hive.complete_intent_failure``.
+        """
         chat_id = message.context.get("chat_id")
         if chat_id is None:
             return
-        LOG.error("complete intent failure")
-        self.speak("I don't know how to answer that", chat_id)
+        LOG.info("the hub found no answer (complete intent failure)")
+        self.speak(self.line(NO_ANSWER, _session_of(message)), chat_id)
 
     def speak(self, text: str, chat_id: int) -> None:
         """Post ``text`` back to ``chat_id``, without waiting for Telegram.
@@ -571,6 +612,12 @@ class HiveMindTelegramBridge:
         detail = f": {error}" if isinstance(error, TelegramError) else ""
         LOG.warning(f"failed to send a reply to Telegram chat {chat_id}: "
                     f"{type(error).__name__}{detail}")
+
+
+def _session_of(message: Message) -> Optional[str]:
+    """The session id a hub message answers, when it says."""
+    session = message.context.get("session")
+    return session.get("session_id") if isinstance(session, dict) else None
 
 
 __all__ = ["HiveMindTelegramBridge", "TokenRejected", "report_token_rejected", "platform"]

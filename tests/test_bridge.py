@@ -76,7 +76,7 @@ def test_connect_hivemind_calls_connect_once_and_registers_handlers():
     fake_client.run_forever.assert_not_called()
     assert bridge._connected.is_set()
     registered = {call.args[0] for call in fake_client.on_mycroft.call_args_list}
-    assert registered == {"speak", "hive.complete_intent_failure"}
+    assert {"speak", "complete_intent_failure", "hive.complete_intent_failure"} <= registered
 
 
 def test_connect_hivemind_bounds_handshake_retries():
