@@ -16,7 +16,7 @@ from typing import Mapping, Optional, Sequence
 from ovos_utils.log import LOG
 
 import hivemind_telegram_bridge
-from hivemind_telegram_bridge import HiveMindTelegramBridge, TokenRejected
+from hivemind_telegram_bridge import REPLY_TIMEOUT, HiveMindTelegramBridge, TokenRejected
 
 #: option -> environment variable it falls back to.
 ENVIRONMENT = {
@@ -25,6 +25,7 @@ ENVIRONMENT = {
     "require_mention": "TELEGRAM_REQUIRE_MENTION",
     "session_scope": "TELEGRAM_SESSION_SCOPE",
     "health_port": "BRIDGE_HEALTH_PORT",
+    "reply_timeout": "BRIDGE_REPLY_TIMEOUT",
     "key": "HIVEMIND_ACCESS_KEY",
     "password": "HIVEMIND_PASSWORD",
     "host": "HIVEMIND_HOST",
@@ -43,12 +44,14 @@ def connect_telegram_to_hivemind(token, key=None, password=None,
                                  host=None, port=5678, self_signed=False,
                                  lang="en-us", site_id="telegram",
                                  allowed_chats=None, require_mention=True,
-                                 session_scope="chat", health_port=None):
+                                 session_scope="chat", health_port=None,
+                                 reply_timeout=REPLY_TIMEOUT):
     bridge = HiveMindTelegramBridge(
         token=token, key=key, password=password, host=host, port=port,
         self_signed=self_signed, lang=lang, site_id=site_id,
         allowed_chats=allowed_chats, require_mention=require_mention,
         session_scope=session_scope, health_port=health_port,
+        reply_timeout=reply_timeout,
     )
     bridge.start()
     return bridge
@@ -59,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Bridge a Telegram bot to a HiveMind node",
         epilog="Every option falls back to an environment variable "
                "(TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_CHATS, TELEGRAM_REQUIRE_MENTION, TELEGRAM_SESSION_SCOPE, BRIDGE_HEALTH_PORT, "
+               "BRIDGE_REPLY_TIMEOUT, "
                "HIVEMIND_ACCESS_KEY, HIVEMIND_PASSWORD, HIVEMIND_HOST, "
                "HIVEMIND_PORT, HIVEMIND_SITE_ID, HIVEMIND_SELF_SIGNED, "
                "HIVEMIND_LANG). The token, access key and password also "
@@ -79,6 +83,10 @@ def build_parser() -> argparse.ArgumentParser:
                              "person in each chat")
     parser.add_argument("--health-port", type=int, default=None,
                         help="serve /healthz and /readyz on this port (default: off)")
+    parser.add_argument("--reply-timeout", type=float, default=None,
+                        help="seconds to wait for the hub's answer, showing typing..., "
+                             "before saying it cannot answer right now; 0 turns "
+                             f"this off (default: {REPLY_TIMEOUT:g})")
     # HiveMind
     parser.add_argument("--access-key", dest="key", default=None,
                         help="HiveMind access key (default: from identity file)")
@@ -167,6 +175,14 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
     except ValueError:
         parser.error("BRIDGE_HEALTH_PORT must be a number")
 
+    reply_timeout = pick("reply_timeout")
+    try:
+        reply_timeout = float(reply_timeout) if reply_timeout is not None else REPLY_TIMEOUT
+    except ValueError:
+        parser.error("BRIDGE_REPLY_TIMEOUT must be a number of seconds")
+    if reply_timeout < 0:
+        parser.error("BRIDGE_REPLY_TIMEOUT must not be negative")
+
     session_scope = pick("session_scope") or "chat"
     if session_scope not in ("chat", "person"):
         parser.error("TELEGRAM_SESSION_SCOPE must be 'chat' or 'person'")
@@ -188,6 +204,7 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
         "require_mention": require_mention,
         "session_scope": session_scope,
         "health_port": health_port,
+        "reply_timeout": reply_timeout,
     }
 
 

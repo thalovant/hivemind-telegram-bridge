@@ -13,7 +13,8 @@ Two scenarios, timed end to end through the real python-telegram-bot stack:
 - slow hub socket: two messages; each hub send takes 250 ms; the first
   answer arrives while the second message is being sent.
 
-Numbers are printed (``pytest -s``) and appended as JSON lines to
+"typing…" is timed too, from reading the message to the sendChatAction
+call. Numbers are printed (``pytest -s``) and appended as JSON lines to
 ``$LATENCY_REPORT`` when that is set.
 """
 import json
@@ -70,6 +71,12 @@ def test_burst_replies_do_not_queue_behind_each_other(telegram_api):
     numbers = {"inbound_median": statistics.median(inbound), "inbound_max": max(inbound),
                "outbound_median": statistics.median(outbound), "outbound_max": max(outbound),
                "bus_held_max": max(hub.held)}
+    typing = [min(t for t, _, params in telegram_api.calls_to("sendChatAction")
+                  if params.get("chat_id") == chat) - telegram_api.served[n]
+              for n, chat in enumerate(chats, start=1)
+              if any(params.get("chat_id") == chat for _, _, params in telegram_api.calls_to("sendChatAction"))]
+    if typing:  # "typing…" shown after the message was read
+        numbers["typing_median"], numbers["typing_max"] = statistics.median(typing), max(typing)
     _report("burst", numbers)
     hub.close()
     assert numbers["inbound_max"] < LIMIT

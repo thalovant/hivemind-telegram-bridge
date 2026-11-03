@@ -37,7 +37,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from functools import partial
 from http import HTTPStatus
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from hivemind_bus_client import (
     HiveMessage,
@@ -48,8 +48,9 @@ from ovos_bus_client.message import Message
 from ovos_utils.log import LOG
 
 from hivemind_telegram_bridge.health import HealthServer
-from hivemind_telegram_bridge.lines import NO_ANSWER, bridge_line
+from hivemind_telegram_bridge.lines import NO_ANSWER, UNAVAILABLE, bridge_line
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.error import InvalidToken, TelegramError
 from telegram.ext import (
     Application,
@@ -87,6 +88,20 @@ LANGUAGES_KEPT = 4096
 
 #: ovos-core's "no skill could answer" and the name older hubs relayed it under.
 INTENT_FAILURE_TYPES = ("complete_intent_failure", "hive.complete_intent_failure")
+#: ovos-core's "this utterance is dealt with", sent after the answer, or
+#: alone when the hub chose not to answer (a cancelled utterance).
+HANDLED_TYPE = "ovos.utterance.handled"
+#: HiveMind-core's refusal of a message (quota, rate limit, agent down).
+DENIED_TYPE = "hive.policy.denied"
+
+#: Seconds the bridge waits for the hub's answer, showing "typing…", before
+#: it says it cannot answer. ``0`` turns waiting off (no typing, no line).
+REPLY_TIMEOUT = 60.0
+#: Telegram shows "typing…" for 5 s after a chat action: renew it before.
+TYPING_EVERY = 4.0
+#: The "cannot answer right now" line is said at most once per person and
+#: chat in this many seconds, however many questions go unanswered.
+UNAVAILABLE_EVERY = 30.0
 
 #: What the bridge writes to the termination log when Telegram refuses the
 #: bot token, so the platform can ask for a new token instead of restarting
@@ -168,6 +183,7 @@ class HiveMindTelegramBridge:
                  session_scope: str = "chat",
                  health_port: Optional[int] = None,
                  max_message_age: float = MAX_MESSAGE_AGE,
+                 reply_timeout: float = REPLY_TIMEOUT,
                  *,
                  client: Optional[HiveMessageBusClient] = None,
                  app: Optional[Application] = None):
@@ -199,6 +215,10 @@ class HiveMindTelegramBridge:
             are not answered (they were waiting while the bridge was
             down). They are still read, so Telegram does not send them
             again.
+        reply_timeout: seconds to wait for the hub's answer, showing
+            "typing…" in the chat, before saying the bridge cannot answer
+            right now. A late answer is still delivered. ``0`` turns this
+            off.
         client: pre-built HiveMessageBusClient (tests / advanced setups).
             NOTE: HiveMessageBusClient does NOT open a connection in
             __init__ -- call start() (or connect_hivemind()) to connect.
@@ -217,6 +237,7 @@ class HiveMindTelegramBridge:
                              f"not {session_scope!r}")
         self.session_scope = session_scope
         self.max_message_age = max_message_age
+        self.reply_timeout = reply_timeout
 
         self._token_rejected = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -254,6 +275,13 @@ class HiveMindTelegramBridge:
         # the bridge says itself; written on the loop, read on the bus thread.
         self._languages: "OrderedDict[str, str]" = OrderedDict()
         self._languages_lock = threading.Lock()
+        # Questions waiting for the hub, by (chat id, session id); when the
+        # last "typing…" went to each chat; when each was last told the hub
+        # cannot answer. Only touched on the Telegram loop.
+        self._waits: Dict[Tuple[int, str], "_Wait"] = {}
+        self._typing_at: Dict[int, float] = {}
+        self._unavailable_at: Dict[Tuple[int, str], float] = {}
+        self._background: Set[asyncio.Task] = set()
 
     def _build_application(self, token: str) -> Application:
         """The Telegram Application, on a transport that reports a rejected token.
@@ -291,6 +319,8 @@ class HiveMindTelegramBridge:
         self.client.on_mycroft("speak", self.handle_speak)
         for msg_type in INTENT_FAILURE_TYPES:
             self.client.on_mycroft(msg_type, self.handle_intent_failure)
+        self.client.on_mycroft(HANDLED_TYPE, self.handle_handled)
+        self.client.on_mycroft(DENIED_TYPE, self.handle_denied)
         self._connected.set()
         LOG.info("== connected to HiveMind")
 
@@ -425,16 +455,21 @@ class HiveMindTelegramBridge:
                        "HiveMind yet")
             return
 
-        # Awaited on the hub-send thread, never run on this loop: the loop
-        # keeps sending replies while the hub socket is slow.
+        # Sent on the hub-send thread, never on this loop, so the loop keeps
+        # sending replies while the hub socket is slow; "typing…" starts
+        # while it goes.
+        sent = asyncio.get_running_loop().run_in_executor(
+            self._hub_sender, self.forward_to_hivemind, text, sender, chat.id)
+        session_id = self.session_id(chat.id, sender)
+        self._expect_answer(chat.id, session_id)
         try:
-            await asyncio.get_running_loop().run_in_executor(
-                self._hub_sender, self.forward_to_hivemind, text, sender, chat.id)
+            await sent
         except Exception as error:
             # emit() puts the whole message, text included, in some of its
             # errors: name the kind of failure only.
             LOG.warning(f"could not send a message from chat {chat.id} to the "
                         f"hub: {type(error).__name__}")
+            self._give_up(chat.id, session_id)
 
     def _is_stale(self, message) -> bool:
         """Whether ``message`` was sent more than ``max_message_age`` ago.
@@ -544,7 +579,7 @@ class HiveMindTelegramBridge:
         utterance = message.data.get("utterance")
         if not utterance:
             return
-        self.speak(utterance, chat_id)
+        self.speak(utterance, chat_id, _session_of(message))
 
     def handle_intent_failure(self, message: Message) -> None:
         """No skill could answer: say so, in the person's language.
@@ -558,9 +593,37 @@ class HiveMindTelegramBridge:
         if chat_id is None:
             return
         LOG.info("the hub found no answer (complete intent failure)")
-        self.speak(self.line(NO_ANSWER, _session_of(message)), chat_id)
+        session_id = _session_of(message)
+        self.speak(self.line(NO_ANSWER, session_id), chat_id, session_id)
 
-    def speak(self, text: str, chat_id: int) -> None:
+    def handle_handled(self, message: Message) -> None:
+        """The hub is done with a question: stop waiting for it, say nothing."""
+        chat_id = message.context.get("chat_id")
+        if chat_id is not None:
+            self._on_loop(self._answered, chat_id, _session_of(message))
+
+    def handle_denied(self, message: Message) -> None:
+        """The hub refused a question (quota, rate limit, agent unreachable).
+
+        The refusal names no chat. When exactly one question is waiting it
+        can only be that one, and the person is told now; otherwise the
+        reply timeout tells them.
+        """
+        if message.data.get("denied_type") != "recognizer_loop:utterance":
+            return
+        LOG.info(f"the hub refused a question: {message.data.get('code')}")
+        self._on_loop(self._denied)
+
+    def _on_loop(self, callback: Callable, *args) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(callback, *args)
+        except RuntimeError:  # closed in between: shutting down
+            pass
+
+    def speak(self, text: str, chat_id: int, session_id: Optional[str] = None) -> None:
         """Post ``text`` back to ``chat_id``, without waiting for Telegram.
 
         Called from the HiveMind bus's own thread, never from the
@@ -580,11 +643,16 @@ class HiveMindTelegramBridge:
         # and a debug log is kept, shipped and read far more widely than the chat.
         LOG.debug(f"Sending message to Telegram chat {chat_id}: {len(text)} characters")
         try:
-            future = asyncio.run_coroutine_threadsafe(self._send_in_order(chat_id, text), loop)
+            future = asyncio.run_coroutine_threadsafe(
+                self._deliver(chat_id, session_id, text), loop)
         except RuntimeError:  # the loop closed in between: shutting down
             LOG.warning("Telegram loop stopped, dropping reply")
             return
         future.add_done_callback(partial(self._log_send_failure, chat_id))
+
+    async def _deliver(self, chat_id: int, session_id: Optional[str], text: str) -> None:
+        self._answered(chat_id, session_id)
+        await self._send_in_order(chat_id, text)
 
     async def _send_in_order(self, chat_id: int, text: str) -> None:
         """Send ``text`` to ``chat_id`` after the replies scheduled before it."""
@@ -599,19 +667,149 @@ class HiveMindTelegramBridge:
             entry[1] -= 1
             if entry[1] == 0:
                 self._chat_sends.pop(chat_id, None)
+        # Telegram clears "typing…" when the bot's message arrives: renew it
+        # for anyone in this chat still waiting for an answer.
+        self._typing_at.pop(chat_id, None)
+        for (waiting_chat, _), wait in list(self._waits.items()):
+            if waiting_chat == chat_id:
+                wait.wake.set()
 
-    @staticmethod
-    def _log_send_failure(chat_id: int, future: Future) -> None:
+    # ------------------------------------------------------------------
+    # waiting for the hub: "typing…", then a line if no answer comes
+    # (all on the Telegram loop)
+    # ------------------------------------------------------------------
+    def _expect_answer(self, chat_id: int, session_id: str) -> None:
+        """Show "typing…" in ``chat_id`` until the hub answers ``session_id``.
+
+        If no answer comes within ``reply_timeout``, the person is told the
+        bridge cannot answer right now. A second question from the same
+        person before the answer restarts the wait; it does not add one.
+        """
+        if not self.reply_timeout or self.reply_timeout <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        key = (chat_id, session_id)
+        wait = self._waits.get(key)
+        if wait is None or wait.task is None or wait.task.done():
+            wait = self._waits[key] = _Wait()
+            wait.task = loop.create_task(self._wait_for_answer(key, wait))
+        wait.deadline = loop.time() + self.reply_timeout
+        wait.wake.set()
+
+    async def _wait_for_answer(self, key: Tuple[int, str], wait: "_Wait") -> None:
+        chat_id, session_id = key
+        loop = asyncio.get_running_loop()
+        try:
+            while not wait.answered:
+                remaining = wait.deadline - loop.time()
+                if remaining <= 0:
+                    break
+                wait.wake.clear()
+                self._keep_typing(chat_id)
+                try:
+                    await asyncio.wait_for(wait.wake.wait(), min(TYPING_EVERY, remaining))
+                except asyncio.TimeoutError:
+                    pass
+            if not wait.answered:
+                LOG.info(f"no answer from the hub for chat {chat_id} in "
+                         f"{self.reply_timeout:g} s")
+                self._forget(key, wait)
+                await self._say_unavailable(chat_id, session_id)
+        finally:
+            self._forget(key, wait)
+
+    def _forget(self, key: Tuple[int, str], wait: "_Wait") -> None:
+        wait.answered = True
+        if self._waits.get(key) is wait:
+            del self._waits[key]
+        if not any(chat == key[0] for chat, _ in self._waits):
+            self._typing_at.pop(key[0], None)
+
+    def _answered(self, chat_id: int, session_id: Optional[str]) -> None:
+        """The hub answered (or is done with) ``session_id`` in ``chat_id``.
+
+        A session the bridge is not waiting for (an answer without one, or
+        a hub that rewrote it) ends every wait in the chat: a "cannot
+        answer" line after an answer is worse than none.
+        """
+        key = (chat_id, session_id)
+        keys = [key] if key in self._waits else [k for k in self._waits if k[0] == chat_id]
+        for done in keys:
+            wait = self._waits.get(done)
+            if wait is not None:
+                self._forget(done, wait)
+                wait.wake.set()
+
+    def _denied(self) -> None:
+        if len(self._waits) == 1:
+            (chat_id, session_id), = self._waits
+            self._give_up(chat_id, session_id)
+
+    def _give_up(self, chat_id: int, session_id: str) -> None:
+        """The hub will not answer this question: stop waiting and say so now."""
+        self._answered(chat_id, session_id)
+        self._spawn(self._say_unavailable(chat_id, session_id))
+
+    async def _say_unavailable(self, chat_id: int, session_id: str) -> None:
+        loop = asyncio.get_running_loop()
+        key, now = (chat_id, session_id), loop.time()
+        for old in [k for k, at in self._unavailable_at.items() if now - at >= UNAVAILABLE_EVERY]:
+            del self._unavailable_at[old]
+        if key in self._unavailable_at:
+            return
+        self._unavailable_at[key] = now
+        try:
+            await self._send_in_order(chat_id, self.line(UNAVAILABLE, session_id))
+        except Exception as error:
+            self._log_failure(chat_id, error)
+
+    def _keep_typing(self, chat_id: int) -> None:
+        """Send "typing…" to ``chat_id`` unless one went there moments ago."""
+        loop = asyncio.get_running_loop()
+        last = self._typing_at.get(chat_id)
+        if last is not None and loop.time() - last < TYPING_EVERY * 0.75:
+            return
+        self._typing_at[chat_id] = loop.time()
+        self._spawn(self._send_typing(chat_id))
+
+    async def _send_typing(self, chat_id: int) -> None:
+        try:
+            await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception as error:  # cosmetic: never let it fail anything
+            LOG.debug(f"no typing indicator in chat {chat_id}: {type(error).__name__}")
+
+    def _spawn(self, coroutine) -> None:
+        task = asyncio.get_running_loop().create_task(coroutine)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+
+    @classmethod
+    def _log_send_failure(cls, chat_id: int, future: Future) -> None:
         if future.cancelled():
             return
         error = future.exception()
-        if error is None:
-            return
+        if error is not None:
+            cls._log_failure(chat_id, error)
+
+    @staticmethod
+    def _log_failure(chat_id: int, error: BaseException) -> None:
         # Telegram's own description ("Forbidden: bot was blocked by the
         # user") helps and holds no message text; anything else, the kind only.
         detail = f": {error}" if isinstance(error, TelegramError) else ""
         LOG.warning(f"failed to send a reply to Telegram chat {chat_id}: "
                     f"{type(error).__name__}{detail}")
+
+
+class _Wait:
+    """A question waiting for the hub's answer."""
+
+    __slots__ = ("deadline", "answered", "wake", "task")
+
+    def __init__(self):
+        self.deadline = 0.0
+        self.answered = False
+        self.wake = asyncio.Event()
+        self.task: Optional[asyncio.Task] = None
 
 
 def _session_of(message: Message) -> Optional[str]:
