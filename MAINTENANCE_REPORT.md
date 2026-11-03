@@ -1,6 +1,44 @@
-Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Address the CI and documentation review: publish from main only, sign before :latest, pinned audit evidence, qualified claims.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
 
 # Maintenance report: hivemind-telegram-bridge
+
+## 2026-11-03: Polish pass (solid, fast)
+
+**Changes** (each its own commit on `polish/solid-fast-replies`, oldest first)
+
+1. A rejected bot token (401 at start or while polling; 404 at start) closes the hub connection, writes `token_rejected` to `/dev/termination-log` and exits with status 3; the token is no longer printed in the start-up traceback, and httpx's URL logging is held at WARNING (`TokenRejected`, `_TokenWatch`, `__main__.main`).
+2. Telegram and the hub never wait for each other: `speak()` schedules the send and returns (per-chat order kept), hub sends run on one dedicated thread; a failed hub send no longer logs the person's words.
+3. Messages sent more than 120 s before they are read are confirmed and not answered (`_is_stale`).
+4. The bridge's own lines in seven languages, from the sender's `language_code`, then `HIVEMIND_LANG` (`lines.py`); `complete_intent_failure`, which current hubs send, is handled.
+5. "typing…" while the hub thinks; "cannot answer right now" at the reply timeout (60 s, `BRIDGE_REPLY_TIMEOUT`), or at once when the hub is unreachable or refuses the only waiting question; `ovos.utterance.handled` ends a wait quietly.
+6. Long replies split at 4096 UTF-16 units, every character kept (`split.py`); flood control (429) waited out.
+7. `stop()` after the bridge ended is a no-op; module docstring says which thread does what.
+8. Docs: README, QUICK_FACTS, FAQ, AUDIT (sections 3 and 4 fixed, 8-17 added), SUGGESTIONS, docs/index.md, AGENTS.md.
+
+**Rationale:** the owner asked for the live chat bridges to be perfect, solid, fast and polished. The rejected-token state lets the platform ask for a new token instead of restarting forever; the threading change removes head-of-line blocking that grew with every simultaneous person; the rest closes gaps where a person got silence (no-answer never fired, long replies and 429s lost, hub down) or a stale answer.
+
+**Verification**
+
+- `python -m pytest tests -q`: 93 passed on Python 3.14.8 and 3.12 (local venvs). New tests were checked to fail without their change (the old code at `140ca52`, or the change reverted in place): token watch, non-blocking speak, per-chat order, emit text in logs, stale messages, split.
+- `ruff check --isolated --select F,E9 .`: clean.
+- Latency, `tests/test_latency.py` (fake hub + fake Bot API through the real python-telegram-bot stack; sendMessage 300 ms; second scenario: hub send 250 ms):
+
+  | Measure | Before (`140ca52`) | After |
+  | --- | --- | --- |
+  | speak -> sendMessage, five replies at once, median | 602.8 ms | 0.1-0.2 ms |
+  | speak -> sendMessage, five replies at once, max | 1205.4 ms | 0.4 ms |
+  | hub bus thread held per reply | 301.6 ms | 0.1 ms |
+  | reply during a slow hub send | 240.4 ms | 0.3-0.5 ms |
+  | message read -> `recognizer_loop:utterance` emitted, median | 0.7 ms | 2-3 ms (hop to the hub-send thread) |
+  | message read -> "typing…" requested, median | none | 2.9 ms |
+
+- Not verified: a live Telegram bot, a live hub, CI on GitHub for this branch (runs on the pull request), the image build.
+
+**Transparency report**
+
+- **AI model:** Claude Opus 5.5 (`claude-opus-5-5`), in Claude Code.
+- **Actions taken:** wrote the code changes, the fakes in `tests/conftest.py` and every new test; measured latency on the old and new code; updated these documents.
+- **Oversight:** directed by the repository owner through an orchestrating agent; no human code review yet; the pull request is not merged.
 
 ## 2026-11-02: Thalovant fork
 

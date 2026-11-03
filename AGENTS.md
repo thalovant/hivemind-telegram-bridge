@@ -1,3 +1,5 @@
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
+
 # This is the Thalovant fork
 
 The rules in this section win over anything below them, which is upstream's
@@ -133,12 +135,26 @@ inventing a new pattern here.
   Do not add retry/backoff logic on top of `connect()` that defeats this.
 - **Return upstream responses verbatim.** `handle_speak()` forwards
   `message.data["utterance"]` to Telegram unmodified; do not reformat,
-  truncate, or add bridge-specific decoration to hub-authored text. The one
-  exception is the fixed fallback line on `hive.complete_intent_failure`,
-  which is bridge-authored by design because the hub sent no utterance to
-  relay.
+  truncate, or add bridge-specific decoration to hub-authored text. A reply
+  longer than one Telegram message is split (`split.py`) with every
+  character kept, never shortened. The bridge-authored lines are the ones
+  in `lines.py`, said only when the hub sent nothing to relay: no skill
+  matched (`complete_intent_failure`), or no answer came (reply timeout,
+  hub unreachable, refusal). Keep them short and add a language to every
+  line at once.
 - **Thread safety.** `speak()` runs on the HiveMind bus's own thread, never
   on the asyncio loop Telegram's `Application` uses. Any new HiveMind →
-  Telegram path must go through `asyncio.run_coroutine_threadsafe` the same
-  way — a direct `await` from the bus thread will raise or silently no-op
-  depending on timing.
+  Telegram path must go through `asyncio.run_coroutine_threadsafe` (or
+  `_on_loop`) the same way — a direct `await` from the bus thread will
+  raise or silently no-op depending on timing.
+- **Neither side waits for the other.** The bus thread never waits for a
+  Telegram call (no `future.result()`): it also delivers every other hub
+  message and the client's keepalive. The Telegram loop never calls
+  `client.emit()`: hub sends go through the single `_hub_sender` thread, in
+  order (the client's encrypted transport is not written from two threads).
+  Waiting state (`_waits`, typing, the per-chat send locks) lives on the
+  loop only. `tests/test_latency.py` measures both directions; keep it
+  green.
+- **Never log what people wrote, nor the token.** `emit()` errors carry the
+  serialized message and python-telegram-bot's `InvalidToken` carries the
+  token: log the kind of error only, and never chain `InvalidToken`.

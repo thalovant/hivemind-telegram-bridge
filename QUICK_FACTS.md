@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Thalovant fork set up: fixes on main, Thalovant CI and signed images, docs set added.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
 
 # Quick facts: hivemind-telegram-bridge
 
@@ -14,8 +14,11 @@ Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Thalovant fork set up: fixes o
 | Image user | `bridge`, uid 10001; identity in `/home/bridge/.config/hivemind` |
 | Default branch | `main` (upstream: `JarbasHiveMind/hivemind-telegram-bridge`, branch `dev`) |
 | CI | `.github/workflows/ci.yml`: tests on Python 3.12 and 3.14, ruff `F,E9`, image smoke test, publish on `main` |
-| Tests | `tests/`, 44 tests (`python -m pytest tests -q`) |
-| HiveMind message types | sends `recognizer_loop:utterance`; handles `speak`, `hive.complete_intent_failure` |
+| Tests | `tests/`, 93 tests (`python -m pytest tests -q`); `tests/conftest.py` has a fake Bot API and a fake hub |
+| HiveMind message types | sends `recognizer_loop:utterance`; handles `speak`, `complete_intent_failure` (and the older `hive.complete_intent_failure`), `ovos.utterance.handled`, `hive.policy.denied` |
+| Rejected token | writes `token_rejected` to `/dev/termination-log`, exit status 3 (`TokenRejected`, `report_token_rejected`) |
+| Bridge's own lines | `hivemind_telegram_bridge/lines.py`: en, fr, es, de, it, pt, nl; sender's `language_code`, then `HIVEMIND_LANG`, then English |
+| Limits | messages older than 120 s not answered (`MAX_MESSAGE_AGE`); reply timeout 60 s (`REPLY_TIMEOUT`); typing renewed every 4 s; replies split at 4096 UTF-16 units (`split.py`); 429 retried up to 3 times |
 | License | Apache-2.0 |
 
 ## Settings
@@ -27,6 +30,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Thalovant fork set up: fixes o
 | `--no-require-mention` | `TELEGRAM_REQUIRE_MENTION` |
 | `--session-scope` | `TELEGRAM_SESSION_SCOPE` (`chat` or `person`) |
 | `--health-port` | `BRIDGE_HEALTH_PORT` |
+| `--reply-timeout` | `BRIDGE_REPLY_TIMEOUT` (seconds, default 60, `0` turns waiting off) |
 | `--access-key` | `HIVEMIND_ACCESS_KEY` (or `_FILE`) |
 | `--password` | `HIVEMIND_PASSWORD` (or `_FILE`) |
 | `--host`, `--port` | `HIVEMIND_HOST`, `HIVEMIND_PORT` |
