@@ -10,6 +10,7 @@ that holds the value, the convention for secrets mounted into a container.
 A flag wins over its environment variable, and the variable over its file.
 """
 import argparse
+import math
 import os
 from typing import Mapping, Optional, Sequence
 
@@ -180,8 +181,8 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
         reply_timeout = float(reply_timeout) if reply_timeout is not None else REPLY_TIMEOUT
     except ValueError:
         parser.error("BRIDGE_REPLY_TIMEOUT must be a number of seconds")
-    if reply_timeout < 0:
-        parser.error("BRIDGE_REPLY_TIMEOUT must not be negative")
+    if not math.isfinite(reply_timeout) or reply_timeout < 0:
+        parser.error("BRIDGE_REPLY_TIMEOUT must be a finite number of seconds, 0 or more")
 
     session_scope = pick("session_scope") or "chat"
     if session_scope not in ("chat", "person"):

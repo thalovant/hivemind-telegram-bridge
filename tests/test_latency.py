@@ -45,7 +45,8 @@ def _run(telegram_api, hub, updates, replies_expected):
     try:
         assert wait_for(lambda: telegram_api.calls_to("getUpdates"), timeout=10)
         telegram_api.push(*updates)
-        assert wait_for(lambda: len(telegram_api.calls_to("sendMessage")) >= replies_expected,
+        # answered, not just started: a send cancelled half way must fail this
+        assert wait_for(lambda: len(telegram_api.done_to("sendMessage")) >= replies_expected,
                         timeout=15), "not every reply was sent"
     finally:
         bridge.stop()

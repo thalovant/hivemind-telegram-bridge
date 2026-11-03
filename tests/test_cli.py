@@ -115,6 +115,6 @@ def test_the_session_scope_defaults_to_the_chat_and_rejects_anything_else():
 def test_the_reply_timeout_defaults_to_a_minute_and_must_be_a_number():
     assert resolve_options(["--token", "tok"], {})["reply_timeout"] == 60.0
     assert resolve_options(["--token", "tok", "--reply-timeout", "0"], {})["reply_timeout"] == 0.0
-    for wrong in ("soon", "-1"):
+    for wrong in ("soon", "-1", "inf", "nan"):
         with pytest.raises(SystemExit):
             resolve_options(["--token", "tok"], {"BRIDGE_REPLY_TIMEOUT": wrong})

@@ -158,3 +158,71 @@ def test_waiting_can_be_turned_off(running):
     assert wait_for(lambda: bridge.hub.emitted)
     time.sleep(0.4)
     assert bridge.typing() == [] and bridge.sent() == []
+
+
+def test_a_late_answer_to_an_expired_question_leaves_other_waits_alone(running):
+    """Person scope: Alice's question timed out; its late answer must not end Bob's wait."""
+    bridge = running(reply_timeout=0.4, session_scope="person")
+    bridge.ask(1, chat_id=-100, user_id=1)
+    assert wait_for(lambda: len(bridge.hub.emitted) == 1)
+    _, alice = bridge.hub.emitted[-1]
+    assert wait_for(lambda: bridge.sent(-100), timeout=2)  # Alice's wait ended
+    bridge.api.push(text_update(2, "@HiveBot and tomorrow", chat_id=-100, user_id=2,
+                                chat_type="group"))
+    assert wait_for(lambda: len(bridge.hub.emitted) == 2)
+    bridge.hub.send("speak", {"utterance": "late for alice"}, dict(alice.context))
+    assert wait_for(lambda: "late for alice" in bridge.sent(-100))
+    time.sleep(0.05)
+    assert any(key[0] == -100 for key in bridge.bridge._waits), "Bob's wait was ended"
+
+
+def test_each_person_in_a_shared_chat_is_told_when_the_hub_is_down(running):
+    """Chat scope: one session for the chat, but the line is throttled per person."""
+    hub = FakeHub()
+
+    def down(_):
+        raise RuntimeError("Can not send messages before opening the websocket connection")
+
+    hub.emit = down
+    bridge = running(hub, reply_timeout=30)
+    bridge.api.push(text_update(1, "@HiveBot hi", chat_id=-100, user_id=1, chat_type="group"))
+    assert wait_for(lambda: len(bridge.sent(-100)) == 1, timeout=2)
+    bridge.api.push(text_update(2, "@HiveBot hi", chat_id=-100, user_id=2, chat_type="group"))
+    assert wait_for(lambda: len(bridge.sent(-100)) == 2, timeout=2)
+    bridge.api.push(text_update(3, "@HiveBot hi again", chat_id=-100, user_id=1, chat_type="group"))
+    time.sleep(0.3)
+    assert len(bridge.sent(-100)) == 2, "the same person was told twice within 30 s"
+
+
+def test_a_slow_hub_send_does_not_hold_up_reading_the_next_message(telegram_api):
+    hub = FakeHub(emit_delay=0.5)
+    made = Running(telegram_api, hub)
+    try:
+        telegram_api.push(text_update(1, "first", chat_id=1, user_id=1),
+                          text_update(2, "second", chat_id=2, user_id=2))
+        assert wait_for(lambda: made.typing(2), timeout=3)
+        assert made.typing(2)[0] - telegram_api.served[2] < 0.2, "the second message waited"
+    finally:
+        made.stop()
+        hub.close()
+
+
+@pytest.mark.parametrize("setting", [{"reply_timeout": float("inf")}, {"reply_timeout": float("nan")},
+                                     {"reply_timeout": -1}, {"max_message_age": -1},
+                                     {"max_message_age": float("nan")}])
+def test_nonsense_timings_are_refused(setting):
+    from unittest.mock import MagicMock
+
+    with pytest.raises(ValueError):
+        HiveMindTelegramBridge(client=MagicMock(), app=MagicMock(), **setting)
+
+
+def test_stopping_lets_a_reply_being_sent_finish(telegram_api):
+    """A long reply is several sendMessage calls; stopping must not cut it in half."""
+    hub = FakeHub(answer=lambda message: "\n".join("x" * 3000 for _ in range(3)))
+    telegram_api.latency["sendMessage"] = 0.3
+    made = Running(telegram_api, hub)
+    made.ask(1)
+    assert wait_for(lambda: telegram_api.calls_to("sendMessage"), timeout=5)
+    made.stop()
+    assert len(telegram_api.done_to("sendMessage")) == 3

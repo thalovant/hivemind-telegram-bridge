@@ -66,10 +66,12 @@ def _ask(made, language_code=None, chat_id=42, user_id=1):
     asyncio.run(made.handle_telegram_message(upd, MagicMock()))
 
 
-def _no_answer(made, client, msg_type="complete_intent_failure", chat_id=42):
+def _no_answer(made, client, msg_type="complete_intent_failure", chat_id=42, user_id=1):
+    """The hub's no-answer, carrying the question's context back, as the hub does."""
     handlers = {call.args[0]: call.args[1] for call in client.on_mycroft.call_args_list}
     session = {"session_id": made.session_id(chat_id, None)}
-    handlers[msg_type](Message(msg_type, {}, {"chat_id": chat_id, "session": session}))
+    handlers[msg_type](Message(msg_type, {}, {"chat_id": chat_id, "session": session,
+                                              "user": {"telegram_user_id": user_id}}))
 
 
 def _sent(app):
@@ -104,3 +106,28 @@ def test_current_and_older_hubs_no_answer_is_handled(msg_type):
     made, client, app = _bridge()
     _no_answer(made, client, msg_type)
     assert _sent(app) == LINES["en"][NO_ANSWER]
+
+
+def _sent_all(app, count):
+    deadline = time.monotonic() + 2
+    while app.bot.send_message.await_count < count and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return [call.kwargs["text"] for call in app.bot.send_message.call_args_list]
+
+
+def test_in_a_shared_chat_each_no_answer_is_in_the_askers_language():
+    made, client, app = _bridge(lang="en-us")  # one hub session for the whole chat
+    _ask(made, language_code="fr", user_id=1)
+    _ask(made, language_code="de", user_id=2)
+    _no_answer(made, client, user_id=1)
+    assert _sent_all(app, 1) == [LINES["fr"][NO_ANSWER]]
+    _no_answer(made, client, user_id=2)
+    assert _sent_all(app, 2)[-1] == LINES["de"][NO_ANSWER]
+
+
+def test_a_sender_whose_app_reports_no_language_gets_hivemind_lang():
+    made, client, app = _bridge(lang="fr-fr")
+    _ask(made, language_code="es", user_id=1)
+    _ask(made, language_code=None, user_id=1)  # the same person, now without one
+    _no_answer(made, client, user_id=1)
+    assert _sent(app) == LINES["fr"][NO_ANSWER]

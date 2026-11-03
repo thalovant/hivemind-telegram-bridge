@@ -87,3 +87,22 @@ def test_the_http_client_never_logs_the_token_url():
     # httpx logs each request URL at INFO; a Bot API URL holds the token
     for name in ("httpx", "httpcore"):
         assert not logging.getLogger(name).isEnabledFor(logging.INFO)
+
+
+def test_a_rejected_token_frees_the_health_port_and_the_http_clients(telegram_api, hub, monkeypatch):
+    from telegram.request import HTTPXRequest
+
+    closed = []
+    original = HTTPXRequest.shutdown
+
+    async def shutdown(self):
+        closed.append(self)
+        await original(self)
+
+    monkeypatch.setattr(HTTPXRequest, "shutdown", shutdown)
+    telegram_api.status["getMe"] = 401
+    bridge = HiveMindTelegramBridge(token=TOKEN, client=hub, health_port=0)
+    with pytest.raises(TokenRejected):
+        bridge.start()
+    assert bridge._health is None
+    assert set(map(id, bridge._own_requests)) <= set(map(id, closed))

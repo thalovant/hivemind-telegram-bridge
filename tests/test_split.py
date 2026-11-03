@@ -89,3 +89,18 @@ def test_flood_control_is_waited_out(telegram_api):
     finally:
         bridge.stop()
         wait_for(lambda: outcome.get("done"), timeout=10)
+
+
+def test_a_flood_wait_beyond_the_budget_gives_the_reply_up_at_once(telegram_api):
+    telegram_api.flood["sendMessage"] = 1
+    telegram_api.flood_wait = 500  # more than RETRY_AFTER_BUDGET
+    bridge, outcome = _run(telegram_api, "it is noon")
+    try:
+        assert wait_for(lambda: telegram_api.calls_to("sendMessage"), timeout=5)
+        import time
+
+        time.sleep(0.5)
+        assert len(telegram_api.calls_to("sendMessage")) == 1
+    finally:
+        bridge.stop()
+        wait_for(lambda: outcome.get("done"), timeout=10)

@@ -50,9 +50,11 @@ class FakeTelegramAPI:
 
     def __init__(self):
         self.calls: List[tuple] = []
+        self.done: List[tuple] = []  # like calls, once the answer is sent back
         self.status: Dict[str, int] = {}
         self.latency: Dict[str, float] = {}
         self.flood: Dict[str, int] = {}  # method -> how many calls get 429 first
+        self.flood_wait = 1  # the retry_after those 429s ask for
         self.served: Dict[int, float] = {}  # update_id -> when getUpdates returned it
         self._pending: List[dict] = []
         self._lock = threading.Lock()
@@ -64,6 +66,10 @@ class FakeTelegramAPI:
     def calls_to(self, method: str) -> List[tuple]:
         return [call for call in list(self.calls) if call[1] == method]
 
+    def done_to(self, method: str) -> List[tuple]:
+        """Calls to ``method`` that were answered successfully."""
+        return [call for call in list(self.done) if call[1] == method]
+
     async def __call__(self, request, url: str, method: str, request_data=None, **_):
         api_method = url.rsplit("/", 1)[-1]
         params = dict(request_data.parameters) if request_data is not None else {}
@@ -73,8 +79,8 @@ class FakeTelegramAPI:
         if self.flood.get(api_method):
             self.flood[api_method] -= 1
             return 429, json.dumps({"ok": False, "error_code": 429,
-                                    "description": "Too Many Requests: retry after 1",
-                                    "parameters": {"retry_after": 1}}).encode()
+                                    "description": f"Too Many Requests: retry after {self.flood_wait}",
+                                    "parameters": {"retry_after": self.flood_wait}}).encode()
         if api_method == "sendMessage" and len(str(params.get("text", "")).encode("utf-16-le")) > 8192:
             return 400, json.dumps({"ok": False, "error_code": 400,
                                     "description": "Bad Request: message is too long"}).encode()
@@ -86,7 +92,9 @@ class FakeTelegramAPI:
                 await asyncio.sleep(0.02)
             return status, json.dumps({"ok": False, "error_code": status,
                                        "description": description}).encode()
-        return 200, json.dumps({"ok": True, "result": await self._result(api_method, params)}).encode()
+        result = await self._result(api_method, params)
+        self.done.append((time.monotonic(), api_method, params))
+        return 200, json.dumps({"ok": True, "result": result}).encode()
 
     async def _result(self, api_method: str, params: dict):
         if api_method == "getMe":
