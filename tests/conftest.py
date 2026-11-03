@@ -147,11 +147,15 @@ class FakeHub:
     """
 
     def __init__(self, answer: Optional[Callable] = None, think: float = 0.0,
-                 emit_delay=0.0, refuse: Optional[Callable] = None):
+                 emit_delay=0.0, refuse: Optional[Callable] = None,
+                 refuse_early=False, echo_numbers: bool = True):
         self.answer = answer
         self.think = think
         self.emit_delay = emit_delay  # seconds, or a function of the message
         self.refuse = refuse  # message -> True: answer with hive.policy.denied
+        self.refuse_early = refuse_early  # seconds into the emit to refuse (False: after it)
+        self.echo_numbers = echo_numbers  # False: a hub that drops bridge_question
+        self.emitting = threading.Event()  # set when an emit starts
         self.handlers: Dict[str, Callable] = {}
         self.emitted: List[tuple] = []
         self.replies: List[tuple] = []
@@ -171,14 +175,22 @@ class FakeHub:
 
     def emit(self, hive_message):
         started = time.monotonic()
+        self.emitting.set()
         message = hive_message.payload
+        if not self.echo_numbers:
+            message.context.pop("bridge_question", None)
+        refused = self.refuse is not None and self.refuse(message)
+        denial = ("hive.policy.denied", {"denied_type": "recognizer_loop:utterance",
+                                         "code": "intent_quota_exceeded"}, {})
+        if refused and self.refuse_early is not False:
+            self.send(*denial, at=started + float(self.refuse_early))
         delay = self.emit_delay(message) if callable(self.emit_delay) else self.emit_delay
         if delay:
             time.sleep(delay)
         self.emitted.append((started, message))
-        if self.refuse is not None and self.refuse(message):
-            self.send("hive.policy.denied", {"denied_type": "recognizer_loop:utterance",
-                                             "code": "intent_quota_exceeded"}, {})
+        if refused:
+            if self.refuse_early is False:
+                self.send(*denial)
             return
         if self.answer is not None:
             text = self.answer(message)

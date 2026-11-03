@@ -139,8 +139,9 @@ inventing a new pattern here.
   `message.data["utterance"]` to Telegram unmodified; do not reformat,
   truncate, or add bridge-specific decoration to hub-authored text. A reply
   longer than one Telegram message is split (`split.py`) in order, never
-  shortened (only a whitespace run longer than a whole message, which
-  Telegram could not send, loses what does not fit). The bridge-authored lines are the ones
+  shortened: a whitespace run that would make a blank message is joined
+  to the text next to it (`_place_whitespace`); only whitespace no message
+  could carry beside visible text is left out. The bridge-authored lines are the ones
   in `lines.py`, said only when the hub sent nothing to relay: no skill
   matched (`complete_intent_failure`), or no answer came (reply timeout,
   hub unreachable, refusal). Keep them short and add a language to every

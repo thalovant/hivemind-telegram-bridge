@@ -190,3 +190,37 @@ def test_an_interior_whitespace_run_shorter_than_a_message_is_kept():
     pieces = split_message(text)
     assert "".join(pieces) == text
     assert all(piece.strip() for piece in pieces)
+
+
+def test_a_short_trailing_whitespace_run_after_a_full_piece_is_kept():
+    for text in ("a" * 4096 + " ", " " + "a" * 4096, "a" * 4096 + "\n\n" + "b"):
+        pieces = split_message(text)
+        assert "".join(pieces) == text
+        assert all(piece.strip() for piece in pieces)
+
+
+def test_whitespace_is_only_lost_when_no_split_could_keep_it():
+    """Random texts: visible text always kept; a whitespace run shorter than a
+    message too, unless the reply has fewer visible characters than the
+    messages it needs."""
+    import math
+    import random
+    import re
+
+    rng = random.Random(7)
+    for _ in range(3000):
+        limit = rng.choice([2, 5, 20, 64])
+        parts = []
+        for _ in range(rng.randint(0, 30)):
+            if rng.random() < 0.4:
+                parts.append(rng.choice([" ", "\n", "\t"]) * rng.randint(1, max(1, limit - 1)))
+            else:
+                parts.append(rng.choice(["a", "bc", "word", "x" * rng.randint(1, 3 * limit), "é", ". "]))
+        text = "".join(parts)
+        pieces = split_message(text, limit)
+        assert all(units(piece) <= limit and piece.strip() for piece in pieces)
+        assert re.sub(r"\s", "", "".join(pieces)) == re.sub(r"\s", "", text)
+        visible = len(re.sub(r"\s", "", text))
+        runs_fit = all(len(run) < limit for run in re.findall(r"\s+", text))
+        if runs_fit and visible and visible >= math.ceil(units(text) / limit):
+            assert "".join(pieces) == text, (text, limit)

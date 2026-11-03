@@ -135,6 +135,9 @@ LINES_ROOM = 8
 #: the question's context on its replies, so a reply carrying it ends
 #: exactly that question's wait.
 QUESTION_KEY = "bridge_question"
+#: "cannot answer right now" lines a full chat queue could not take are owed
+#: and sent as the queue drains; at most this many per chat.
+OWED_MAX = 64
 #: When the bridge stops, replies already being sent get this long to finish.
 SEND_DRAIN = 5.0
 #: How long a reply is remembered, so the hub's "handled" that follows it
@@ -142,8 +145,9 @@ SEND_DRAIN = 5.0
 REPLIED_KEPT = 600.0
 #: A refusal from the hub (``hive.policy.denied``) comes at once, when the
 #: hub admits or refuses the question; it names none. It is pinned on a
-#: question only when that is the one question sent to the hub this
-#: recently (counted from the send, not from when it was queued).
+#: question only when that is the one unanswered question being sent to the
+#: hub, or sent this recently (counted from the end of the send, not from
+#: when it was queued).
 REFUSAL_WINDOW = 5.0
 #: Questions waiting for the hub-send thread at most. Beyond that the hub
 #: is not keeping up: the person is told at once instead of queueing more.
@@ -340,7 +344,9 @@ class HiveMindTelegramBridge:
         # on the Telegram loop.
         self._pending: Dict[Tuple[int, str], Deque["_Question"]] = {}
         self._replied: Dict[Tuple[int, Optional[str], Optional[int]], List] = {}
-        self._recent: Deque["_Question"] = deque()  # sent within REFUSAL_WINDOW
+        self._recent: Deque["_Question"] = deque()  # being sent, or sent within REFUSAL_WINDOW
+        self._owed: Dict[int, List[Optional[str]]] = {}  # chat -> languages of owed lines
+        self._hub_echoes_numbers = False  # seen a reply carrying QUESTION_KEY
         self._typing_at: Dict[int, float] = {}
         self._numbers = itertools.count()
         self._hub_backlog = 0  # questions submitted to the hub-send thread, not yet sent
@@ -602,7 +608,14 @@ class HiveMindTelegramBridge:
         if question is not None and loop is not None:
             # queued on the loop before the emit, so ahead of any refusal
             loop.call_soon_threadsafe(self._sent_to_hub, question, time.monotonic())
-        self.forward_to_hivemind(text, sender, chat_id, number)
+        try:
+            self.forward_to_hivemind(text, sender, chat_id, number)
+        finally:
+            if question is not None and loop is not None:
+                try:
+                    loop.call_soon_threadsafe(self._emit_done, question, time.monotonic())
+                except RuntimeError:  # the loop ended: shutting down
+                    pass
         return True
 
     def _is_stale(self, message) -> bool:
@@ -724,7 +737,11 @@ class HiveMindTelegramBridge:
             return
         utterance = message.data.get("utterance")
         if not isinstance(utterance, str) or not utterance.strip():
-            return  # nothing Telegram could show: not an answer
+            # Nothing Telegram could show: not an answer. Remembered, so the
+            # "handled" that follows does not end the question in silence.
+            self._on_loop(self._blank_reply, chat_id, _session_of(message),
+                          _asker_of(message), _question_of(message))
+            return
         self.speak(utterance, chat_id, _session_of(message), _asker_of(message),
                    _question_of(message))
 
@@ -744,7 +761,7 @@ class HiveMindTelegramBridge:
         user_id = _asker_of(message)
         language = self._language_of(chat_id, user_id)
         self.speak(self.line(NO_ANSWER, language), chat_id, _session_of(message), user_id,
-                   _question_of(message))
+                   _question_of(message), room=LINES_ROOM)
 
     def handle_handled(self, message: Message) -> None:
         """The hub is done with a question: stop waiting for it, say nothing."""
@@ -785,7 +802,8 @@ class HiveMindTelegramBridge:
             pass
 
     def speak(self, text: str, chat_id: int, session_id: Optional[str] = None,
-              user_id: Optional[int] = None, question_id: Optional[int] = None) -> None:
+              user_id: Optional[int] = None, question_id: Optional[int] = None,
+              room: int = 0) -> None:
         """Post ``text`` back to ``chat_id``, without waiting for Telegram.
 
         Called from the HiveMind bus's own thread, never from the
@@ -811,13 +829,14 @@ class HiveMindTelegramBridge:
         ticket: dict = {}  # filled by _reply_came with the question this reply ends
         self._on_loop(self._reply_came, chat_id, session_id, user_id, ticket, question_id)
         try:
-            future = asyncio.run_coroutine_threadsafe(self._send_reply(chat_id, text, ticket), loop)
+            future = asyncio.run_coroutine_threadsafe(
+                self._send_reply(chat_id, text, ticket, room), loop)
         except RuntimeError:  # the loop closed in between: shutting down
             LOG.warning("Telegram loop stopped, dropping reply")
             return
         future.add_done_callback(partial(self._log_send_failure, chat_id))
 
-    async def _send_reply(self, chat_id: int, text: str, ticket: dict) -> None:
+    async def _send_reply(self, chat_id: int, text: str, ticket: dict, room: int = 0) -> None:
         """Send the hub's reply; if it cannot go, say the bridge cannot answer.
 
         The question the reply answers stopped waiting when the reply came
@@ -825,7 +844,7 @@ class HiveMindTelegramBridge:
         person would otherwise get nothing at all.
         """
         try:
-            sent = await self._send_in_order(chat_id, text)
+            sent = await self._send_in_order(chat_id, text, room)
         except Exception:
             question = ticket.get("question")
             if question is not None:
@@ -865,6 +884,7 @@ class HiveMindTelegramBridge:
                 self._chat_sends.pop(chat_id, None)
             if task is not None:
                 self._sending.discard(task)
+            self._flush_owed(chat_id)
         # Telegram clears "typing…" when the bot's message arrives: renew it
         # for anyone in this chat still waiting for an answer.
         self._typing_at.pop(chat_id, None)
@@ -982,14 +1002,18 @@ class HiveMindTelegramBridge:
         The hub echoes the question's context. When it carries the bridge's
         question number (``QUESTION_KEY``), that question, if it still
         waits; a late answer or a further sentence then ends nothing else.
-        Without one, matched by session and person: the oldest question
-        waiting from that person in that session; with no person, the
-        oldest one in the session; with no session either, the oldest one in
-        the chat (from that person, when known). A message for a person or a
-        session with nothing waiting is about none, and ends no one's wait.
+        Once the hub has been seen echoing numbers, a message without one is
+        about no question (a notification, say), and ends no one's wait.
+        From a hub that never echoes them, matched by session and person,
+        independently: the oldest question waiting from that person (when
+        named) in that session (when named), else in the chat. A message for
+        a person or a session with nothing waiting is about none.
         """
         if question_id is not None:
+            self._hub_echoes_numbers = True
             return next((q for q in self._waiting_in(chat_id) if q.number == question_id), None)
+        if self._hub_echoes_numbers:
+            return None
         if session_id is not None:
             waiting = list(self._pending.get((chat_id, session_id), ()))
         else:
@@ -1005,6 +1029,7 @@ class HiveMindTelegramBridge:
         question = self._question_for(chat_id, session_id, user_id, question_id)
         if question is None:
             return
+        question.answered = True
         self._end(question)
         if ticket is not None:
             ticket["question"] = question
@@ -1025,43 +1050,63 @@ class HiveMindTelegramBridge:
         Without one, a question was dealt with silently (a cancelled
         utterance): its wait ends, quietly.
         """
-        if question_id is not None:
-            question = self._question_for(chat_id, session_id, user_id, question_id)
-            if question is not None:
-                self._end(question)
+        if question_id is None:
+            key = (chat_id, session_id, user_id)
+            replied = self._replied.get(key)
+            if replied and replied[0] > 0:
+                replied[0] -= 1
+                if not replied[0]:
+                    del self._replied[key]
+                return
+        question = self._question_for(chat_id, session_id, user_id, question_id)
+        if question is None:
             return
-        key = (chat_id, session_id, user_id)
-        replied = self._replied.get(key)
-        if replied and replied[0] > 0:
-            replied[0] -= 1
-            if not replied[0]:
-                del self._replied[key]
+        if question.blank:
+            # the hub "answered" with nothing to show: say so, as at a timeout
+            self._give_up(question, chat_id, question.language)
             return
-        question = self._question_for(chat_id, session_id, user_id)
+        question.answered = True  # dealt with by the hub (a cancelled utterance)
+        self._end(question)
+
+    def _blank_reply(self, chat_id: int, session_id: Optional[str],
+                     user_id: Optional[int] = None, question_id: Optional[int] = None) -> None:
+        """A ``speak`` with nothing to show: the question keeps waiting, marked."""
+        question = self._question_for(chat_id, session_id, user_id, question_id)
         if question is not None:
-            self._end(question)
+            question.blank = True
 
     def _sent_to_hub(self, question: "_Question", at: float) -> None:
         """``question`` is being sent to the hub (``at``, monotonic): refusable now."""
+        question.sending = True
         question.sent_at = at
         self._prune_recent(at)
         self._recent.append(question)
 
+    def _emit_done(self, question: "_Question", at: float) -> None:
+        """The send of ``question`` ended: the window runs from here."""
+        question.sending = False
+        question.sent_at = at
+
     def _prune_recent(self, now: float) -> None:
-        while self._recent and now - self._recent[0].sent_at > REFUSAL_WINDOW:
+        while (self._recent and not self._recent[0].sending
+               and now - self._recent[0].sent_at > REFUSAL_WINDOW):
             self._recent.popleft()
 
     def _denied(self) -> None:
-        """A refusal names no question: pin it only on the one sent just now.
+        """A refusal names no question: pin it only when it can be one.
 
-        The hub refuses at admission, so its refusal follows the send at
-        once. When exactly one question was sent in the last
-        ``REFUSAL_WINDOW`` seconds and it still waits, it is that one;
-        otherwise the reply timeout tells the person.
+        The hub refuses at admission, so its refusal comes while the
+        question is being sent or right after. The candidates are the
+        questions being sent or sent in the last ``REFUSAL_WINDOW`` seconds,
+        except those the hub answered (an answered question was admitted).
+        Timed-out and given-up ones stay candidates: a refusal may be theirs.
+        When exactly one candidate is left and it still waits, it is that
+        one; otherwise the reply timeout tells the person.
         """
         self._prune_recent(time.monotonic())
-        if len(self._recent) == 1 and not self._recent[0].done:
-            question = self._recent[0]
+        candidates = [q for q in self._recent if not q.answered]
+        if len(candidates) == 1 and not candidates[0].done:
+            question = candidates[0]
             self._give_up(question, question.chat_id, question.language)
 
     def _give_up(self, question: Optional["_Question"], chat_id: int,
@@ -1074,11 +1119,34 @@ class HiveMindTelegramBridge:
         self._spawn(self._say_unavailable(chat_id, language))
 
     async def _say_unavailable(self, chat_id: int, language: Optional[str]) -> None:
-        """Say "cannot answer right now" in ``chat_id``: once per unanswered question."""
+        """Say "cannot answer right now" in ``chat_id``: once per unanswered question.
+
+        If the chat's queue is full even past ``LINES_ROOM``, the line is
+        owed and sent as the queue drains (``_flush_owed``), never dropped
+        while fewer than ``OWED_MAX`` are owed.
+        """
         try:
-            await self._send_in_order(chat_id, self.line(UNAVAILABLE, language), LINES_ROOM)
+            if not await self._send_in_order(chat_id, self.line(UNAVAILABLE, language), LINES_ROOM):
+                owed = self._owed.setdefault(chat_id, [])
+                if len(owed) < OWED_MAX:
+                    owed.append(language)
+                else:
+                    LOG.warning(f"{len(owed)} lines are owed to chat {chat_id}; dropping one more")
         except Exception as error:
             self._log_failure(chat_id, error)
+
+    def _flush_owed(self, chat_id: int) -> None:
+        """A send to ``chat_id`` ended: send one owed line, if there is room now."""
+        owed = self._owed.get(chat_id)
+        if not owed:
+            return
+        entry = self._chat_sends.get(chat_id)
+        if entry is not None and entry[1] >= SENDS_PER_CHAT_MAX + LINES_ROOM:
+            return
+        language = owed.pop(0)
+        if not owed:
+            del self._owed[chat_id]
+        self._spawn(self._say_unavailable(chat_id, language))
 
     def _keep_typing(self, chat_id: int) -> None:
         """Send "typing…" to ``chat_id`` unless one went there moments ago."""
@@ -1121,7 +1189,8 @@ class _Question:
     """One question waiting for the hub's answer."""
 
     __slots__ = ("chat_id", "session_id", "user_id", "language", "deadline",
-                 "number", "done", "wake", "task", "sent_at")
+                 "number", "done", "wake", "task", "sent_at", "sending", "answered",
+                 "blank")
 
     def __init__(self, chat_id: int, session_id: str, user_id: Optional[int],
                  language: Optional[str], deadline: float, number: int):
@@ -1131,7 +1200,10 @@ class _Question:
         self.language = language  # the language their app reports
         self.deadline = deadline
         self.number = number  # order of asking, across the bridge
-        self.sent_at = 0.0  # time.monotonic() when it went to the hub
+        self.sent_at = 0.0  # time.monotonic() when its send to the hub started, then ended
+        self.sending = False  # its emit is running
+        self.answered = False  # ended by the hub's answer (so it was admitted)
+        self.blank = False  # the hub's only answer so far had nothing to show
         self.done = False
         self.wake = asyncio.Event()
         self.task: Optional[asyncio.Task] = None
