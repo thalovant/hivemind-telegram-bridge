@@ -15,7 +15,8 @@ from typing import Mapping, Optional, Sequence
 
 from ovos_utils.log import LOG
 
-from hivemind_telegram_bridge import HiveMindTelegramBridge
+import hivemind_telegram_bridge
+from hivemind_telegram_bridge import HiveMindTelegramBridge, TokenRejected
 
 #: option -> environment variable it falls back to.
 ENVIRONMENT = {
@@ -191,10 +192,20 @@ def resolve_options(argv: Optional[Sequence[str]] = None,
 
 
 def main(argv: Optional[Sequence[str]] = None):
+    """Run the bridge until stopped.
+
+    When Telegram refuses the bot token, writes ``token_rejected`` to the
+    termination log and exits with status 3: restarting cannot help, the
+    token has to be replaced.
+    """
     options = resolve_options(argv)
     LOG.info("bridge starting; press Ctrl-C to stop")
     try:
         connect_telegram_to_hivemind(**options)
+    except TokenRejected:
+        LOG.error("Telegram rejected the bot token; replace it to start the bridge again")
+        hivemind_telegram_bridge.report_token_rejected()
+        raise SystemExit(hivemind_telegram_bridge.EXIT_TOKEN_REJECTED) from None
     except KeyboardInterrupt:
         LOG.info("shutting down")
 

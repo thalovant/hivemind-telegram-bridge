@@ -28,9 +28,11 @@ recurring bug across every HiveMind bridge written so far:
   this bridge cannot do that step itself. See the README.
 """
 import asyncio
+import logging
 import re
 import threading
-from typing import Iterable, Optional
+from http import HTTPStatus
+from typing import Callable, Iterable, Optional
 
 from hivemind_bus_client import (
     HiveMessage,
@@ -42,6 +44,7 @@ from ovos_utils.log import LOG
 
 from hivemind_telegram_bridge.health import HealthServer
 from telegram import Update
+from telegram.error import InvalidToken
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -49,6 +52,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 platform = "HiveMindTelegramBridgeV0.1"
 
@@ -66,6 +70,67 @@ GROUP_CHAT_TYPES = frozenset({"group", "supergroup", "channel"})
 #: person in each chat, so in a group each person's follow-up questions
 #: continue their own conversation.
 SESSION_SCOPES = ("chat", "person")
+
+#: What the bridge writes to the termination log when Telegram refuses the
+#: bot token, so the platform can ask for a new token instead of restarting
+#: a bridge that can never log in.
+TOKEN_REJECTED = "token_rejected"
+#: Where a container says why it stopped (Kubernetes' default
+#: ``terminationMessagePath``).
+TERMINATION_LOG = "/dev/termination-log"
+#: Exit status when Telegram refuses the bot token.
+EXIT_TOKEN_REJECTED = 3
+
+# httpx logs every request URL at INFO, and a Telegram API URL carries the
+# bot token (https://api.telegram.org/bot<token>/getUpdates). Keep those
+# loggers quiet whatever level the rest of the process logs at.
+for _name in ("httpx", "httpcore"):
+    logging.getLogger(_name).setLevel(logging.WARNING)
+
+
+class TokenRejected(RuntimeError):
+    """Telegram refused the bot token.
+
+    401 Unauthorized from any call, or ``InvalidToken`` while starting (a
+    malformed token gets 404 from getMe). The message never contains the
+    token: python-telegram-bot's own ``InvalidToken`` does, so it is not
+    chained.
+    """
+
+
+def report_token_rejected(path: Optional[str] = None) -> None:
+    """Write exactly ``token_rejected`` to the termination log.
+
+    A file that cannot be written (not in a container, read-only) is
+    ignored: the exit status still says the bridge stopped.
+    """
+    try:
+        with open(path or TERMINATION_LOG, "w", encoding="utf-8") as handle:
+            handle.write(TOKEN_REJECTED)
+    except OSError:
+        pass
+
+
+class _TokenWatch(HTTPXRequest):
+    """The HTTP transport, reporting every 401 Unauthorized from Telegram.
+
+    python-telegram-bot raises ``InvalidToken`` for a 401 on getMe at start,
+    but a 401 on getUpdates later (the token was revoked while the bridge
+    runs) only ends its polling task: the process would stay up, look
+    healthy and never hear another message. 409 Conflict (another process
+    polls with the same token) is not a rejected token and is left to the
+    library's retry loop.
+    """
+
+    def __init__(self, on_unauthorized: Callable[[], None], **kwargs):
+        super().__init__(**kwargs)
+        self._on_unauthorized = on_unauthorized
+
+    async def do_request(self, *args, **kwargs):
+        code, payload = await super().do_request(*args, **kwargs)
+        if code == HTTPStatus.UNAUTHORIZED:
+            self._on_unauthorized()
+        return code, payload
 
 
 class HiveMindTelegramBridge:
@@ -130,7 +195,10 @@ class HiveMindTelegramBridge:
                              f"not {session_scope!r}")
         self.session_scope = session_scope
 
-        self.app: Application = app or ApplicationBuilder().token(token).build()
+        self._token_rejected = False
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._stop_event: Optional[asyncio.Event] = None
+        self.app: Application = app or self._build_application(token)
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_telegram_message)
         )
@@ -149,8 +217,26 @@ class HiveMindTelegramBridge:
         self._polling = threading.Event()
         self._started = False
         self._connected = threading.Event()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._stop_event: Optional[asyncio.Event] = None
+
+    def _build_application(self, token: str) -> Application:
+        """The Telegram Application, on a transport that reports a rejected token.
+
+        Pool sizes are python-telegram-bot's own defaults (256 for API
+        calls, 1 for getUpdates).
+        """
+        return (ApplicationBuilder().token(token)
+                .request(_TokenWatch(self._on_unauthorized, connection_pool_size=256))
+                .get_updates_request(_TokenWatch(self._on_unauthorized, connection_pool_size=1))
+                .build())
+
+    def _on_unauthorized(self) -> None:
+        """Telegram answered 401: stop, and let ``start()`` report it."""
+        if not self._token_rejected:
+            LOG.error("Telegram answered 401 Unauthorized: the bot token is "
+                      "wrong or was revoked")
+        self._token_rejected = True
+        if self._stop_event is not None:
+            self._stop_event.set()
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -176,6 +262,9 @@ class HiveMindTelegramBridge:
 
         Blocks the calling thread for as long as the bot is polling
         Telegram. Intended to be the last call in a ``__main__``.
+
+        Raises :class:`TokenRejected` when Telegram refuses the bot token,
+        at start or later; the HiveMind connection is closed first.
         """
         if self._started:
             return
@@ -192,21 +281,41 @@ class HiveMindTelegramBridge:
             "check that first."
         )
         asyncio.run(self._run_telegram())
+        if self._token_rejected:
+            try:
+                self.client.close()
+            except Exception:
+                LOG.exception("error closing HiveMind client")
+            self._started = False
+            self._connected.clear()
+            raise TokenRejected("Telegram rejected the bot token")
 
     async def _run_telegram(self) -> None:
         self._loop = asyncio.get_running_loop()
         self._stop_event = asyncio.Event()
-        await self.app.initialize()
-        await self.app.start()
-        await self.app.updater.start_polling()
-        self._polling.set()
-        LOG.info("== listening to Telegram")
         try:
-            await self._stop_event.wait()
+            await self.app.initialize()
+        except InvalidToken:
+            # Its message holds the token: never log or re-raise it.
+            self._token_rejected = True
+            return
+        try:
+            await self.app.start()
+            try:
+                await self.app.updater.start_polling()
+            except InvalidToken:
+                self._token_rejected = True
+                return
+            self._polling.set()
+            LOG.info("== listening to Telegram")
+            try:
+                await self._stop_event.wait()
+            finally:
+                self._polling.clear()
+                await self.app.updater.stop()
         finally:
-            self._polling.clear()
-            await self.app.updater.stop()
-            await self.app.stop()
+            if self.app.running:
+                await self.app.stop()
             await self.app.shutdown()
 
     def stop(self) -> None:
@@ -376,4 +485,4 @@ class HiveMindTelegramBridge:
             LOG.exception(f"failed to send Telegram message to chat={chat_id}")
 
 
-__all__ = ["HiveMindTelegramBridge", "platform"]
+__all__ = ["HiveMindTelegramBridge", "TokenRejected", "report_token_rejected", "platform"]
