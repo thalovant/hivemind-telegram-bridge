@@ -41,6 +41,11 @@ def test_neither_questions_nor_answers_are_logged(monkeypatch):
         runner.start()
         made._loop = loop
         made.speak(SECRET_ANSWER, 42)
+        import time
+
+        deadline = time.monotonic() + 2
+        while not app.bot.send_message.await_count and time.monotonic() < deadline:
+            time.sleep(0.01)  # the send runs on the loop; let it finish
     finally:
         loop.call_soon_threadsafe(loop.stop)
 

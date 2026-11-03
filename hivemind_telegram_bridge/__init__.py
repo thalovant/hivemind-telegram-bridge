@@ -32,9 +32,10 @@ import logging
 import re
 import threading
 import time
+import warnings
 from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from http import HTTPStatus
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
@@ -49,9 +50,10 @@ from ovos_utils.log import LOG
 
 from hivemind_telegram_bridge.health import HealthServer
 from hivemind_telegram_bridge.lines import NO_ANSWER, UNAVAILABLE, bridge_line
+from hivemind_telegram_bridge.split import TELEGRAM_LIMIT, split_message
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.error import InvalidToken, TelegramError
+from telegram.error import InvalidToken, RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -99,6 +101,11 @@ DENIED_TYPE = "hive.policy.denied"
 REPLY_TIMEOUT = 60.0
 #: Telegram shows "typing…" for 5 s after a chat action: renew it before.
 TYPING_EVERY = 4.0
+#: A reply Telegram's flood control holds back (429, "retry after N s") is
+#: tried this many times in all, waiting at most ``RETRY_AFTER_MAX`` seconds
+#: each time, before it is given up.
+SEND_ATTEMPTS = 3
+RETRY_AFTER_MAX = 30.0
 #: The "cannot answer right now" line is said at most once per person and
 #: chat in this many seconds, however many questions go unanswered.
 UNAVAILABLE_EVERY = 30.0
@@ -655,14 +662,19 @@ class HiveMindTelegramBridge:
         await self._send_in_order(chat_id, text)
 
     async def _send_in_order(self, chat_id: int, text: str) -> None:
-        """Send ``text`` to ``chat_id`` after the replies scheduled before it."""
+        """Send ``text`` to ``chat_id`` after the replies scheduled before it.
+
+        A reply longer than one Telegram message goes out as several, in
+        order, every character kept (:func:`split_message`).
+        """
         entry = self._chat_sends.get(chat_id)
         if entry is None:
             entry = self._chat_sends[chat_id] = [asyncio.Lock(), 0]
         entry[1] += 1
         try:
             async with entry[0]:
-                await self.app.bot.send_message(chat_id=chat_id, text=text)
+                for piece in split_message(text, TELEGRAM_LIMIT):
+                    await self._send_one(chat_id, piece)
         finally:
             entry[1] -= 1
             if entry[1] == 0:
@@ -673,6 +685,22 @@ class HiveMindTelegramBridge:
         for (waiting_chat, _), wait in list(self._waits.items()):
             if waiting_chat == chat_id:
                 wait.wake.set()
+
+    async def _send_one(self, chat_id: int, text: str) -> None:
+        """sendMessage, waiting out Telegram's flood control when it asks to."""
+        for attempt in range(1, SEND_ATTEMPTS + 1):
+            try:
+                await self.app.bot.send_message(chat_id=chat_id, text=text)
+                return
+            except RetryAfter as error:
+                if attempt == SEND_ATTEMPTS:
+                    raise
+                with warnings.catch_warnings():  # int vs timedelta deprecation
+                    warnings.simplefilter("ignore")
+                    after = error.retry_after
+                seconds = after.total_seconds() if isinstance(after, timedelta) else float(after)
+                LOG.info(f"Telegram asks to wait {seconds:g} s before writing to chat {chat_id}")
+                await asyncio.sleep(min(max(seconds, 0.0), RETRY_AFTER_MAX))
 
     # ------------------------------------------------------------------
     # waiting for the hub: "typing…", then a line if no answer comes

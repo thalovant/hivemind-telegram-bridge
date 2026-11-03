@@ -52,6 +52,7 @@ class FakeTelegramAPI:
         self.calls: List[tuple] = []
         self.status: Dict[str, int] = {}
         self.latency: Dict[str, float] = {}
+        self.flood: Dict[str, int] = {}  # method -> how many calls get 429 first
         self.served: Dict[int, float] = {}  # update_id -> when getUpdates returned it
         self._pending: List[dict] = []
         self._lock = threading.Lock()
@@ -69,6 +70,14 @@ class FakeTelegramAPI:
         self.calls.append((time.monotonic(), api_method, params))
         if self.latency.get(api_method):
             await asyncio.sleep(self.latency[api_method])
+        if self.flood.get(api_method):
+            self.flood[api_method] -= 1
+            return 429, json.dumps({"ok": False, "error_code": 429,
+                                    "description": "Too Many Requests: retry after 1",
+                                    "parameters": {"retry_after": 1}}).encode()
+        if api_method == "sendMessage" and len(str(params.get("text", "")).encode("utf-16-le")) > 8192:
+            return 400, json.dumps({"ok": False, "error_code": 400,
+                                    "description": "Bad Request: message is too long"}).encode()
         status = self.status.get(api_method, 200)
         if status != 200:
             description = {401: "Unauthorized", 404: "Not Found",
