@@ -36,7 +36,7 @@ A message sent more than 120 s before the bridge reads it is not answered (`Hive
 
 ## What does the bot say when the hub cannot answer, and in which language?
 
-"I don't know how to answer that." when no skill matched (`complete_intent_failure`), and "Sorry, I can't answer right now." when no answer came within `--reply-timeout` (60 s), the hub could not be reached, or it refused the only question waiting (`hive.policy.denied`). The second is said at most once every 30 s to the same person in a chat. The language is that of the person who asked: their Telegram `language_code` when `hivemind_telegram_bridge/lines.py` has it (en, fr, es, de, it, pt, nl), else `HIVEMIND_LANG`, else English.
+"I don't know how to answer that." when no skill matched (`complete_intent_failure`), and "Sorry, I can't answer right now." when no answer came within `--reply-timeout` (60 s), the hub could not be reached, or it refused the only question waiting (`hive.policy.denied`). Every question waits on its own: each unanswered one gets its own line at its own timeout, and a reply ends only the oldest waiting question of its session. The language is that of the person who asked: their Telegram `language_code` when `hivemind_telegram_bridge/lines.py` has it (en, fr, es, de, it, pt, nl), else `HIVEMIND_LANG`, else English.
 
 ## Why does the chat show "typing…"?
 

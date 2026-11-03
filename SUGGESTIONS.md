@@ -5,7 +5,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: reply-off-the-bus
 ## Per-person rate limit in the bridge
 
 - **Problem:** AUDIT.md section 2: where the hub sets no limit, one person can flood it.
-- **Proposal:** a token bucket per (chat, person) in `HiveMindTelegramBridge.forward_to_hivemind`, answering with the "cannot answer right now" line (already rate limited per person, `UNAVAILABLE_EVERY`), configurable by flag and environment.
+- **Proposal:** a token bucket per (chat, person) in `HiveMindTelegramBridge.forward_to_hivemind`, answering with one short "slow down" line per burst, configurable by flag and environment.
 - **Impact:** high for a shared chat on a hub without its own limit; small change.
 
 ## The hub echoes the refused message's context
