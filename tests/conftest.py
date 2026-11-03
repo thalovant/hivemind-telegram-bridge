@@ -147,10 +147,11 @@ class FakeHub:
     """
 
     def __init__(self, answer: Optional[Callable] = None, think: float = 0.0,
-                 emit_delay: float = 0.0):
+                 emit_delay=0.0, refuse: Optional[Callable] = None):
         self.answer = answer
         self.think = think
-        self.emit_delay = emit_delay
+        self.emit_delay = emit_delay  # seconds, or a function of the message
+        self.refuse = refuse  # message -> True: answer with hive.policy.denied
         self.handlers: Dict[str, Callable] = {}
         self.emitted: List[tuple] = []
         self.replies: List[tuple] = []
@@ -170,10 +171,15 @@ class FakeHub:
 
     def emit(self, hive_message):
         started = time.monotonic()
-        if self.emit_delay:
-            time.sleep(self.emit_delay)
         message = hive_message.payload
+        delay = self.emit_delay(message) if callable(self.emit_delay) else self.emit_delay
+        if delay:
+            time.sleep(delay)
         self.emitted.append((started, message))
+        if self.refuse is not None and self.refuse(message):
+            self.send("hive.policy.denied", {"denied_type": "recognizer_loop:utterance",
+                                             "code": "intent_quota_exceeded"}, {})
+            return
         if self.answer is not None:
             text = self.answer(message)
             if text is not None:

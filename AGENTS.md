@@ -155,7 +155,10 @@ inventing a new pattern here.
   message and the client's keepalive. The Telegram loop never calls
   `client.emit()`: hub sends go through the single `_hub_sender` thread, in
   order (the client's encrypted transport is not written from two threads).
-  Waiting state (`_pending`, one `_Question` per question; typing; the per-chat send locks) lives on the
+  `stop()` shuts the hub-send thread down with its queue cancelled.
+  Waiting state (`_pending`, one `_Question` per question, matched to
+  replies by the `bridge_question` number the hub echoes; typing; the
+  per-chat send locks) lives on the
   loop only. `tests/test_latency.py` measures both directions; keep it
   green.
 - **Never log what people wrote, nor the token.** `emit()` errors carry the

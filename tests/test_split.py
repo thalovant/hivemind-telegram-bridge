@@ -177,8 +177,16 @@ def test_a_reply_telegram_refuses_is_followed_by_the_cannot_answer_line(telegram
         telegram_api.push(text_update(1, "what time is it"))
         assert wait_for(lambda: [p["text"] for _, _, p in telegram_api.done_to("sendMessage")]
                         == [LINES["en"][UNAVAILABLE]], timeout=5)
+        tried = [p["text"] for _, _, p in telegram_api.calls_to("sendMessage")]
+        assert tried == ["the answer", LINES["en"][UNAVAILABLE]], "the answer was not tried first"
     finally:
         bridge.stop()
         wait_for(lambda: outcome.get("done"), timeout=10)
         hub.close()
 
+
+def test_an_interior_whitespace_run_shorter_than_a_message_is_kept():
+    text = "a" * 4096 + " " * 2050 + "b" * 4096
+    pieces = split_message(text)
+    assert "".join(pieces) == text
+    assert all(piece.strip() for piece in pieces)

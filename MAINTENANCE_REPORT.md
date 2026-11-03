@@ -21,7 +21,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token re
 
 **Verification**
 
-- `python -m pytest tests -q`: 128 passed on Python 3.14.8 and 3.12 (local venvs). New tests were checked to fail without their change (the old code at `140ca52`, or the change reverted in place): token watch, non-blocking speak, per-chat order, emit text in logs, stale messages, split, the permission hint, and each review fix (`block=False`, ended waits, per-person throttle, drain, timing validation, backlog bound, late-question drop, shared-wait refusal, stale log level, one wait per question, no-session answers, per-person reply matching, refusal window, queue age, per-chat send cap, retry cap, shared flood budget, refused-reply fallback, linear split).
+- `python -m pytest tests -q`: 143 passed on Python 3.14.8 and 3.12 (local venvs). New tests were checked to fail without their change (the old code at `140ca52`, or the change reverted in place): token watch, non-blocking speak, per-chat order, emit text in logs, stale messages, split, the permission hint, and each review fix (`block=False`, ended waits, per-person throttle, drain, timing validation, backlog bound, late-question drop, shared-wait refusal, stale log level, one wait per question, no-session answers, per-person reply matching, refusal window, queue age, per-chat send cap, retry cap, shared flood budget, refused-reply fallback, linear split, question numbers echoed by the hub, refusal window from the send, executor shutdown, whitespace answers and runs).
 - `ruff check --isolated --select F,E9 .`: clean.
 - Latency, `tests/test_latency.py` (fake hub + fake Bot API through the real python-telegram-bot stack; sendMessage 300 ms; second scenario: hub send 250 ms):
 

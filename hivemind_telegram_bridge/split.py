@@ -49,7 +49,9 @@ def split_message(text: str, limit: int = TELEGRAM_LIMIT) -> List[str]:
         if end < len(text):
             for boundary in _BOUNDARIES:
                 at = text.rfind(boundary, start, end)
-                if at >= start + (end - start) // 2:
+                # never end a piece that would hold only whitespace: it could
+                # not be sent, and a shorter run would be lost for nothing
+                if at >= start + (end - start) // 2 and text[start:at + len(boundary)].strip():
                     end = at + len(boundary)
                     break
         pieces.append(text[start:end])

@@ -83,6 +83,7 @@ def test_burst_replies_do_not_queue_behind_each_other(telegram_api):
     assert numbers["inbound_max"] < LIMIT
     assert numbers["outbound_max"] < LIMIT, "replies waited for each other's sendMessage"
     assert numbers["bus_held_max"] < LIMIT, "a reply held the hub's bus thread"
+    assert numbers["typing_max"] < LIMIT, "typing… came late in a burst"
 
 
 def test_a_slow_hub_send_does_not_hold_up_replies(telegram_api):

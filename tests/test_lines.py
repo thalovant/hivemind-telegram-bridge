@@ -31,6 +31,23 @@ def test_every_language_has_every_line_and_each_is_short():
         assert all(0 < len(line) <= 60 for line in lines.values())
 
 
+EXPECTED = {
+    "en": ("I don't know how to answer that.", "Sorry, I can't answer right now."),
+    "fr": ("Je ne sais pas répondre à ça.", "Désolé, je ne peux pas répondre pour le moment."),
+    "es": ("No sé cómo responder a eso.", "Lo siento, ahora mismo no puedo responder."),
+    "de": ("Darauf weiß ich keine Antwort.", "Entschuldigung, ich kann gerade nicht antworten."),
+    "it": ("Non so come rispondere.", "Mi dispiace, al momento non posso rispondere."),
+    "pt": ("Não sei responder a isso.", "Desculpe, não consigo responder agora."),
+    "nl": ("Daar weet ik geen antwoord op.", "Sorry, ik kan nu niet antwoorden."),
+}
+
+
+@pytest.mark.parametrize("language", sorted(EXPECTED))
+def test_each_line_is_really_in_its_language(language):
+    """Literal text: replacing a translation with English must fail here."""
+    assert (LINES[language][NO_ANSWER], LINES[language][UNAVAILABLE]) == EXPECTED[language]
+
+
 def test_the_first_language_with_a_line_wins():
     assert bridge_line(NO_ANSWER, "fr-FR") == LINES["fr"][NO_ANSWER]
     assert bridge_line(UNAVAILABLE, "xx", None, "fr-fr") == LINES["fr"][UNAVAILABLE]
