@@ -31,7 +31,9 @@ import asyncio
 import logging
 import re
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime
 from functools import partial
 from http import HTTPStatus
 from typing import Callable, Dict, Iterable, List, Optional
@@ -72,6 +74,11 @@ GROUP_CHAT_TYPES = frozenset({"group", "supergroup", "channel"})
 #: person in each chat, so in a group each person's follow-up questions
 #: continue their own conversation.
 SESSION_SCOPES = ("chat", "person")
+
+#: A message older than this (seconds) when the bridge reads it is not
+#: answered: Telegram keeps a bot's messages for up to 24 hours while it is
+#: down, and a reply to a question asked long before means nothing any more.
+MAX_MESSAGE_AGE = 120
 
 #: What the bridge writes to the termination log when Telegram refuses the
 #: bot token, so the platform can ask for a new token instead of restarting
@@ -152,6 +159,7 @@ class HiveMindTelegramBridge:
                  require_mention: bool = True,
                  session_scope: str = "chat",
                  health_port: Optional[int] = None,
+                 max_message_age: float = MAX_MESSAGE_AGE,
                  *,
                  client: Optional[HiveMessageBusClient] = None,
                  app: Optional[Application] = None):
@@ -179,6 +187,10 @@ class HiveMindTelegramBridge:
             the two are the same conversation.
         health_port: if set, serve ``/healthz`` and ``/readyz`` on this
             port (see :mod:`hivemind_telegram_bridge.health`).
+        max_message_age: messages sent longer ago than this many seconds
+            are not answered (they were waiting while the bridge was
+            down). They are still read, so Telegram does not send them
+            again.
         client: pre-built HiveMessageBusClient (tests / advanced setups).
             NOTE: HiveMessageBusClient does NOT open a connection in
             __init__ -- call start() (or connect_hivemind()) to connect.
@@ -196,6 +208,7 @@ class HiveMindTelegramBridge:
             raise ValueError(f"session_scope must be one of {SESSION_SCOPES}, "
                              f"not {session_scope!r}")
         self.session_scope = session_scope
+        self.max_message_age = max_message_age
 
         self._token_rejected = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -375,6 +388,8 @@ class HiveMindTelegramBridge:
         message = update.effective_message
         if message is None or not message.text:
             return
+        if self._is_stale(message):
+            return
 
         sender = update.effective_user
         if sender is not None and sender.is_bot:
@@ -408,6 +423,23 @@ class HiveMindTelegramBridge:
             # errors: name the kind of failure only.
             LOG.warning(f"could not send a message from chat {chat.id} to the "
                         f"hub: {type(error).__name__}")
+
+    def _is_stale(self, message) -> bool:
+        """Whether ``message`` was sent more than ``max_message_age`` ago.
+
+        Telegram holds a bot's updates while it is down and hands them all
+        over on the first getUpdates. Reading them (python-telegram-bot
+        confirms each by its offset) and not answering is what keeps an
+        old question from being answered now, or ever again.
+        """
+        sent = getattr(message, "date", None)
+        if not isinstance(sent, datetime):
+            return False
+        age = time.time() - sent.timestamp()
+        if age <= self.max_message_age:
+            return False
+        LOG.debug(f"not answering a message sent {age:.0f} s ago")
+        return True
 
     def addressed_text(self, message, chat) -> Optional[str]:
         """The text to forward, or ``None`` when the message is not for the bot.
