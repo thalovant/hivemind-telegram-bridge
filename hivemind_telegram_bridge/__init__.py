@@ -26,6 +26,16 @@ recurring bug across every HiveMind bridge written so far:
   until a hub admin runs ``hivemind-core allow-msg
   recognizer_loop:utterance <client_id>`` (and usually ``speak`` too);
   this bridge cannot do that step itself. See the README.
+
+Threads, and why neither side waits for the other:
+
+- the asyncio loop runs python-telegram-bot (getUpdates, sendMessage,
+  "typing…") and owns every piece of waiting state;
+- the HiveMind client's bus thread delivers the hub's messages one after
+  the other. ``speak()`` only schedules the send on the loop and returns:
+  a send that waited there would hold up every later hub message;
+- one hub-send thread runs every ``emit()``: never on the loop, where a
+  slow hub socket would hold up every reply, and one at a time, in order.
 """
 import asyncio
 import logging
@@ -395,7 +405,10 @@ class HiveMindTelegramBridge:
     def stop(self) -> None:
         """Stop polling Telegram and close the HiveMind connection."""
         if self._loop is not None and self._stop_event is not None:
-            self._loop.call_soon_threadsafe(self._stop_event.set)
+            try:
+                self._loop.call_soon_threadsafe(self._stop_event.set)
+            except RuntimeError:  # the loop already ended
+                pass
         try:
             self.client.close()
         except Exception:

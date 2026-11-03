@@ -49,6 +49,7 @@ def test_a_token_revoked_while_polling_stops_the_bridge(telegram_api, hub):
     telegram_api.status["getUpdates"] = 401
     assert wait_for(lambda: outcome.get("done"), timeout=10), "the bridge kept running"
     assert isinstance(outcome.get("error"), TokenRejected)
+    bridge.stop()  # after the loop ended: a no-op, not an error
 
 
 def test_a_conflict_is_not_a_rejected_token(telegram_api, hub):
