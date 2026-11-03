@@ -11,16 +11,17 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token re
 3. Messages sent more than 120 s before they are read are confirmed and not answered (`_is_stale`).
 4. The bridge's own lines in seven languages, from the sender's `language_code`, then `HIVEMIND_LANG` (`lines.py`); `complete_intent_failure`, which current hubs send, is handled.
 5. "typing…" while the hub thinks; "cannot answer right now" at the reply timeout (60 s, `BRIDGE_REPLY_TIMEOUT`), or at once when the hub is unreachable or refuses the only waiting question; `ovos.utterance.handled` ends a wait quietly.
-6. Long replies split at 4096 UTF-16 units, every character kept (`split.py`); flood control (429) waited out.
+6. Long replies split at 4096 UTF-16 units, every character kept (`split.py`); flood control (429) waited out, up to 120 s per reply.
 7. `stop()` after the bridge ended is a no-op; module docstring says which thread does what.
 8. The start-up WARNING about `hivemind-core allow-msg` is gone: it was false on a managed hub. The hint is logged once, only when the hub refuses an utterance with `acl_disallowed_type`.
-9. Docs: README, QUICK_FACTS, FAQ, AUDIT (sections 3 and 4 fixed, 8-18 added), SUGGESTIONS, docs/index.md, AGENTS.md.
+9. Review fixes (automated review of the pull request): lines and the cannot-answer throttle per person, late answers end no other waits, `block=False` handlers, 5 s drain on stop, full flood waits within a budget, health port and HTTP clients released on a rejected token, nonsense timings refused; the latency test waits for answered sends.
+10. Docs: README, QUICK_FACTS, FAQ, AUDIT (sections 3 and 4 fixed, 8-19 added), SUGGESTIONS, docs/index.md, AGENTS.md.
 
 **Rationale:** the owner asked for the live chat bridges to be perfect, solid, fast and polished. The rejected-token state lets the platform ask for a new token instead of restarting forever; the threading change removes head-of-line blocking that grew with every simultaneous person; the rest closes gaps where a person got silence (no-answer never fired, long replies and 429s lost, hub down) or a stale answer.
 
 **Verification**
 
-- `python -m pytest tests -q`: 96 passed on Python 3.14.8 and 3.12 (local venvs). New tests were checked to fail without their change (the old code at `140ca52`, or the change reverted in place): token watch, non-blocking speak, per-chat order, emit text in logs, stale messages, split, the permission hint.
+- `python -m pytest tests -q`: 109 passed on Python 3.14.8 and 3.12 (local venvs). New tests were checked to fail without their change (the old code at `140ca52`, or the change reverted in place): token watch, non-blocking speak, per-chat order, emit text in logs, stale messages, split, the permission hint, and each review fix (`block=False`, ended waits, per-person throttle, drain, timing validation).
 - `ruff check --isolated --select F,E9 .`: clean.
 - Latency, `tests/test_latency.py` (fake hub + fake Bot API through the real python-telegram-bot stack; sendMessage 300 ms; second scenario: hub send 250 ms):
 

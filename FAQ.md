@@ -36,7 +36,7 @@ A message sent more than 120 s before the bridge reads it is not answered (`Hive
 
 ## What does the bot say when the hub cannot answer, and in which language?
 
-"I don't know how to answer that." when no skill matched (`complete_intent_failure`), and "Sorry, I can't answer right now." when no answer came within `--reply-timeout` (60 s), the hub could not be reached, or it refused the only question waiting (`hive.policy.denied`). The second is said at most once every 30 s to the same person in a chat. The language is the sender's Telegram `language_code` when `hivemind_telegram_bridge/lines.py` has it (en, fr, es, de, it, pt, nl), else `HIVEMIND_LANG`, else English.
+"I don't know how to answer that." when no skill matched (`complete_intent_failure`), and "Sorry, I can't answer right now." when no answer came within `--reply-timeout` (60 s), the hub could not be reached, or it refused the only question waiting (`hive.policy.denied`). The second is said at most once every 30 s to the same person in a chat. The language is that of the person who asked: their Telegram `language_code` when `hivemind_telegram_bridge/lines.py` has it (en, fr, es, de, it, pt, nl), else `HIVEMIND_LANG`, else English.
 
 ## Why does the chat show "typing…"?
 
@@ -48,7 +48,7 @@ As soon as the hub's `speak` arrives: `speak()` schedules the send on the Telegr
 
 ## What about a reply longer than a Telegram message?
 
-It is sent as several messages, in order, with every character kept (`hivemind_telegram_bridge/split.py`, `split_message`); cuts fall on paragraph, line, sentence or word boundaries. A reply held back by flood control (429) is sent again after the wait Telegram asks for.
+It is sent as several messages, in order, with every character kept (`hivemind_telegram_bridge/split.py`, `split_message`); cuts fall on paragraph, line, sentence or word boundaries. A reply held back by flood control (429) is sent again after exactly the wait Telegram asks for, as long as the waits for that reply add up to 120 s at most (`RETRY_AFTER_BUDGET`); beyond that it is given up and logged, so the chat's later replies do not queue behind it.
 
 ## The log says the hub does not allow this bridge to send `recognizer_loop:utterance`
 

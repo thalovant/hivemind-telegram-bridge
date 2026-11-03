@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: sections 3 and 4 fixed; findings 8-18 added (fixed in this pass, or open and low).
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: sections 3 and 4 fixed; findings 8-19 added (fixed in this pass, or open and low), review findings in 19.
 
 # Audit: hivemind-telegram-bridge
 
@@ -57,7 +57,7 @@ Evidence: `python -m pytest tests -q` (93 passed, 2026-11-03, Python 3.12 and 3.
 
 ## 12. Long replies and flood control lost answers
 
-- **Fixed 2026-11-03.** A reply over 4096 characters failed whole ("Message is too long"); it is now split (`hivemind_telegram_bridge/split.py`). A 429 dropped the reply; it is retried after Telegram's wait (`_send_one`, at most 30 s, 3 attempts). Tests: `tests/test_split.py`.
+- **Fixed 2026-11-03.** A reply over 4096 characters failed whole ("Message is too long"); it is now split (`hivemind_telegram_bridge/split.py`). A 429 dropped the reply; it is sent again after exactly Telegram's wait while the waits for that reply stay within 120 s (`_send_one`, `RETRY_AFTER_BUDGET`). Tests: `tests/test_split.py`.
 
 ## 13. A refusal by the hub names no chat
 
@@ -87,3 +87,15 @@ Evidence: `python -m pytest tests -q` (93 passed, 2026-11-03, Python 3.12 and 3.
 ## 18. Every start warned about hub permissions
 
 - **Fixed 2026-11-03.** `start()` logged a WARNING that a fresh client is denied every message type until an admin runs `hivemind-core allow-msg ...`. On a managed hub the platform grants `recognizer_loop:utterance`, so the line was false and sent readers of the log the wrong way. The hint is now logged once, as a WARNING, only when the hub refuses an utterance with `hive.policy.denied` code `acl_disallowed_type` (`HiveMindTelegramBridge.handle_denied`, `ACL_DISALLOWED_TYPE`). Tests: `tests/test_acl_hint.py`.
+
+## 19. Review findings on the polish pull request
+
+- **Fixed 2026-11-03**, from the automated review of thalovant/hivemind-telegram-bridge#3:
+  - In a shared chat the no-answer line used the language of whoever wrote last; languages are now kept per (chat, person) and read from the user id the hub echoes (`_remember_language`, `_language_of`). Tests: `tests/test_lines.py::test_in_a_shared_chat_each_no_answer_is_in_the_askers_language`, `test_a_sender_whose_app_reports_no_language_gets_hivemind_lang`.
+  - The "cannot answer" throttle was per session, so in a chat-scope group the second person was not told; it is per (chat, person) (`_say_unavailable`). Test: `tests/test_waiting.py::test_each_person_in_a_shared_chat_is_told_when_the_hub_is_down`.
+  - A late answer to a question already given up on ended every other wait in the chat; ended waits are remembered for 10 min (`_ended`, `ENDED_KEPT`). Test: `test_a_late_answer_to_an_expired_question_leaves_other_waits_alone`.
+  - Handlers awaited the hub send with python-telegram-bot's sequential processing, so a slow hub delayed reading the next message; they run with `block=False`. Test: `test_a_slow_hub_send_does_not_hold_up_reading_the_next_message`.
+  - Stopping cancelled replies mid-send; `_drain_sends` gives them `SEND_DRAIN` (5 s). Test: `test_stopping_lets_a_reply_being_sent_finish`. Only `stop()` drains: a SIGTERM still ends the process at once (SUGGESTIONS.md).
+  - A rejected token left the health port bound and the HTTP clients open; both are released (`start`, `_run_telegram`). Test: `tests/test_token.py::test_a_rejected_token_frees_the_health_port_and_the_http_clients`.
+  - Negative or NaN `max_message_age` and negative or non-finite `reply_timeout` are refused (`__init__`, `resolve_options`). Tests: `test_nonsense_timings_are_refused`, `tests/test_cli.py::test_the_reply_timeout_defaults_to_a_minute_and_must_be_a_number`.
+- **Not changed:** a 401 while polling is seen only on the transport the bridge builds itself (`_TokenWatch`); an injected `Application` (tests) does not report it. Failed sends keep Telegram's own error description in the log ("Forbidden: bot was blocked by the user"): it is Telegram's text about the failure, never the reply.
