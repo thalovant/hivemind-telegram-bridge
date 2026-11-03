@@ -344,3 +344,70 @@ def test_an_answer_with_no_session_ends_only_the_oldest_wait(running):
     left = [q.user_id for queue in bridge.bridge._pending.values() for q in queue]
     assert left == [2]
 
+
+
+def test_in_a_shared_chat_a_second_sentence_ends_no_other_wait(running):
+    """Chat scope (one session): Alice's answer in two speaks leaves Bob's wait alone."""
+    bridge = running(reply_timeout=30)
+    _group(bridge, 1, user_id=1)
+    _group(bridge, 2, user_id=2)
+    assert wait_for(lambda: len(bridge.hub.emitted) == 2)
+    _, alice = bridge.hub.emitted[0]
+    for sentence in ("It is noon.", "Have a nice lunch."):
+        bridge.hub.send("speak", {"utterance": sentence}, dict(alice.context))
+    bridge.hub.send("ovos.utterance.handled", {}, dict(alice.context))
+    assert wait_for(lambda: len(bridge.sent(-100)) == 2)
+    time.sleep(0.1)
+    left = [q.user_id for queue in bridge.bridge._pending.values() for q in queue]
+    assert left == [2], "Bob's wait was ended by Alice's second sentence"
+
+
+def test_an_answer_for_a_session_with_nothing_waiting_ends_no_wait(running):
+    """However late (the session long forgotten), it never ends someone else's wait."""
+    bridge = running(reply_timeout=30, session_scope="person")
+    _group(bridge, 1, user_id=2)
+    assert wait_for(lambda: bridge.hub.emitted)
+    bridge.hub.send("speak", {"utterance": "very late, for someone"},
+                    {"chat_id": -100, "session": {"session_id": "telegram--100-7"}})
+    assert wait_for(lambda: bridge.sent(-100) == ["very late, for someone"])
+    time.sleep(0.05)
+    assert waiting(bridge.bridge, -100) == 1
+
+
+def test_a_refusal_long_after_the_only_question_is_not_pinned_on_it(running, monkeypatch):
+    """Refusals come at admission: one arriving later is not about this question."""
+    monkeypatch.setattr(bridge_module, "REFUSAL_WINDOW", 0.2)
+    bridge = running(reply_timeout=30)
+    bridge.ask(1)
+    assert wait_for(lambda: bridge.hub.emitted)
+    time.sleep(0.4)
+    bridge.hub.send("hive.policy.denied", {"denied_type": "recognizer_loop:utterance"}, {})
+    time.sleep(0.3)
+    assert bridge.sent() == []
+    assert waiting(bridge.bridge) == 1
+
+
+def test_a_question_that_got_too_old_in_the_hub_queue_is_not_sent(running):
+    """Read in time, but older than max_message_age by the time the hub socket is free."""
+    # Bot API dates are whole seconds: date them up to 1 s ahead, so both are
+    # fresh when read, and the second is over 0.5 s old once the 1.6 s send
+    # of the first frees the hub socket.
+    hub = FakeHub(emit_delay=1.6)
+    bridge = running(hub, reply_timeout=30, max_message_age=0.5)
+    ahead = time.time() + 1
+    bridge.api.push(text_update(1, "first", chat_id=1, user_id=1, date=ahead),
+                    text_update(2, "second", chat_id=2, user_id=2, date=ahead))
+    assert wait_for(lambda: len(hub.emitted) == 1, timeout=5)
+    time.sleep(2.0)  # long enough for the second to have been sent, had it gone
+    assert [message.context["chat_id"] for _, message in hub.emitted] == [1]
+
+
+def test_replies_queued_for_one_chat_are_capped(running, monkeypatch):
+    monkeypatch.setattr(bridge_module, "SENDS_PER_CHAT_MAX", 2)
+    bridge = running(reply_timeout=0)
+    bridge.api.latency["sendMessage"] = 0.3
+    for n in range(5):
+        bridge.bridge.speak(f"reply {n}", 42)
+    time.sleep(1.0)
+    assert [params["text"] for _, _, params in bridge.api.calls_to("sendMessage")] == [
+        "reply 0", "reply 1"]

@@ -18,7 +18,7 @@ A HiveMind bridge for Telegram: a satellite whose input and output are a Telegra
 | --- | --- |
 | `hivemind_telegram_bridge/__init__.py` | `HiveMindTelegramBridge`: connection lifecycle, `addressed_text` (mention gating), `_is_stale`, `session_id`, `ready`, reply path (`speak`, `_send_in_order`), waiting for the hub (`_expect_answer`, `_wait_for_answer`, typing); `TokenRejected`, `report_token_rejected`, `_TokenWatch` (401 seen at any time) |
 | `hivemind_telegram_bridge/lines.py` | `bridge_line`: the bridge's own lines (no answer, cannot answer now) per language |
-| `hivemind_telegram_bridge/split.py` | `split_message`: a long reply as several messages, every character kept |
+| `hivemind_telegram_bridge/split.py` | `split_message`: a long reply as several messages, in order, walked by offset |
 | `hivemind_telegram_bridge/__main__.py` | `resolve_options`: flags, environment variables, `*_FILE` secrets; `main` turns a rejected token into `token_rejected` and exit status 3 |
 | `tests/conftest.py` | `FakeTelegramAPI` (stands in for the Bot API under python-telegram-bot), `FakeHub` (stands in for `HiveMessageBusClient`) |
 | `hivemind_telegram_bridge/health.py` | `HealthServer`: `/healthz` and `/readyz` |

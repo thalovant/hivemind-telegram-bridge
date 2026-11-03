@@ -25,7 +25,7 @@ def test_language_of(tag, expected):
 
 
 def test_every_language_has_every_line_and_each_is_short():
-    assert {"en", "fr"} <= LINES.keys()
+    assert LINES.keys() == {"en", "fr", "es", "de", "it", "pt", "nl"}  # as documented
     for lines in LINES.values():
         assert lines.keys() == {NO_ANSWER, UNAVAILABLE}
         assert all(0 < len(line) <= 60 for line in lines.values())

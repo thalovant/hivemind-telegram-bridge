@@ -123,11 +123,20 @@ TYPING_EVERY = 4.0
 #: given up at once (and logged) rather than holding the chat's later
 #: replies behind it.
 RETRY_AFTER_BUDGET = 120.0
+#: ... and at most this many times, however short the waits.
+RETRY_AFTER_MAX_RETRIES = 10
+#: Replies waiting to be sent to one chat at most (Telegram slow or holding
+#: the bot back); beyond that a reply is dropped and logged, not queued.
+SENDS_PER_CHAT_MAX = 32
 #: When the bridge stops, replies already being sent get this long to finish.
 SEND_DRAIN = 5.0
-#: How long a session that asked something is remembered, so a late answer
-#: or a second sentence for it is recognised and ends no one else's wait.
-SEEN_KEPT = 600.0
+#: How long a reply is remembered, so the hub's "handled" that follows it
+#: is recognised and ends no further question.
+REPLIED_KEPT = 600.0
+#: A refusal from the hub (``hive.policy.denied``) comes at once, when the
+#: hub admits or refuses the question; it names none. It is pinned on a
+#: question only when that is the one question asked this recently.
+REFUSAL_WINDOW = 5.0
 #: Questions waiting for the hub-send thread at most. Beyond that the hub
 #: is not keeping up: the person is told at once instead of queueing more.
 HUB_BACKLOG_MAX = 64
@@ -322,8 +331,8 @@ class HiveMindTelegramBridge:
         # "handled"; when the last "typing…" went to each chat. Only touched
         # on the Telegram loop.
         self._pending: Dict[Tuple[int, str], Deque["_Question"]] = {}
-        self._seen: Dict[Tuple[int, Optional[str]], float] = {}
-        self._replied: Dict[Tuple[int, Optional[str]], int] = {}
+        self._replied: Dict[Tuple[int, Optional[str], Optional[int]], List] = {}
+        self._recent: Deque["_Question"] = deque()  # asked within REFUSAL_WINDOW
         self._typing_at: Dict[int, float] = {}
         self._numbers = itertools.count()
         self._hub_backlog = 0  # questions submitted to the hub-send thread, not yet sent
@@ -535,8 +544,10 @@ class HiveMindTelegramBridge:
         # sending replies while the hub socket is slow; "typing…" starts
         # while it goes.
         self._hub_backlog += 1
+        written = getattr(message, "date", None)
         sent = asyncio.get_running_loop().run_in_executor(
             self._hub_sender, self._forward_unless_late, time.monotonic(),
+            written.timestamp() if isinstance(written, datetime) else None,
             text, sender, chat.id)
         question = self._expect_answer(chat.id, session_id, user_id, language)
         try:
@@ -550,20 +561,22 @@ class HiveMindTelegramBridge:
         finally:
             self._hub_backlog -= 1
 
-    def _forward_unless_late(self, read_at: float, text: str, sender, chat_id: int) -> bool:
+    def _forward_unless_late(self, read_at: float, written_at: Optional[float],
+                             text: str, sender, chat_id: int) -> bool:
         """``forward_to_hivemind``, unless the question waited too long to be sent.
 
         When the hub socket is slow, questions queue for the hub-send thread.
         One that waited past the reply timeout has already been told the
-        bridge cannot answer (or, with waiting off, is older than
-        ``max_message_age``): sending it now would bring an answer after
-        that, so it is dropped.
+        bridge cannot answer, and one now older than ``max_message_age``
+        would not have been answered had it been read now: sending either
+        would bring an answer that means nothing any more, so it is dropped.
         """
         limit = self.reply_timeout if self.reply_timeout > 0 else self.max_message_age
         waited = time.monotonic() - read_at
-        if waited >= limit:
+        age = time.time() - written_at if written_at is not None else 0.0
+        if waited >= limit or age > self.max_message_age:
             LOG.info(f"not sending a question from chat {chat_id} that waited "
-                     f"{waited:.0f} s for the hub")
+                     f"{waited:.0f} s for the hub ({age:.0f} s after it was written)")
             return False
         self.forward_to_hivemind(text, sender, chat_id)
         return True
@@ -684,7 +697,7 @@ class HiveMindTelegramBridge:
         utterance = message.data.get("utterance")
         if not utterance:
             return
-        self.speak(utterance, chat_id, _session_of(message))
+        self.speak(utterance, chat_id, _session_of(message), _asker_of(message))
 
     def handle_intent_failure(self, message: Message) -> None:
         """No skill could answer: say so, in the person's language.
@@ -699,16 +712,15 @@ class HiveMindTelegramBridge:
             return
         LOG.info("the hub found no answer (complete intent failure)")
         # The hub echoes the question's context: the person who asked it.
-        user = message.context.get("user")
-        user_id = user.get("telegram_user_id") if isinstance(user, dict) else None
+        user_id = _asker_of(message)
         language = self._language_of(chat_id, user_id)
-        self.speak(self.line(NO_ANSWER, language), chat_id, _session_of(message))
+        self.speak(self.line(NO_ANSWER, language), chat_id, _session_of(message), user_id)
 
     def handle_handled(self, message: Message) -> None:
         """The hub is done with a question: stop waiting for it, say nothing."""
         chat_id = message.context.get("chat_id")
         if chat_id is not None:
-            self._on_loop(self._handled, chat_id, _session_of(message))
+            self._on_loop(self._handled, chat_id, _session_of(message), _asker_of(message))
 
     def handle_denied(self, message: Message) -> None:
         """The hub refused a question (quota, rate limit, agent unreachable).
@@ -741,7 +753,8 @@ class HiveMindTelegramBridge:
         except RuntimeError:  # closed in between: shutting down
             pass
 
-    def speak(self, text: str, chat_id: int, session_id: Optional[str] = None) -> None:
+    def speak(self, text: str, chat_id: int, session_id: Optional[str] = None,
+              user_id: Optional[int] = None) -> None:
         """Post ``text`` back to ``chat_id``, without waiting for Telegram.
 
         Called from the HiveMind bus's own thread, never from the
@@ -764,13 +777,29 @@ class HiveMindTelegramBridge:
         # order the hub's messages came, and an "ovos.utterance.handled"
         # right behind this reply must find it already counted (a task's
         # first step would only run after that).
-        self._on_loop(self._reply_came, chat_id, session_id)
+        ticket: dict = {}  # filled by _reply_came with the question this reply ends
+        self._on_loop(self._reply_came, chat_id, session_id, user_id, ticket)
         try:
-            future = asyncio.run_coroutine_threadsafe(self._send_in_order(chat_id, text), loop)
+            future = asyncio.run_coroutine_threadsafe(self._send_reply(chat_id, text, ticket), loop)
         except RuntimeError:  # the loop closed in between: shutting down
             LOG.warning("Telegram loop stopped, dropping reply")
             return
         future.add_done_callback(partial(self._log_send_failure, chat_id))
+
+    async def _send_reply(self, chat_id: int, text: str, ticket: dict) -> None:
+        """Send the hub's reply; if it cannot go, say the bridge cannot answer.
+
+        The question the reply answers stopped waiting when the reply came
+        (so "typing…" stops at once). Should Telegram refuse the reply, that
+        person would otherwise get nothing at all.
+        """
+        try:
+            await self._send_in_order(chat_id, text)
+        except Exception:
+            question = ticket.get("question")
+            if question is not None:
+                await self._say_unavailable(chat_id, question.language)
+            raise
 
     async def _send_in_order(self, chat_id: int, text: str) -> None:
         """Send ``text`` to ``chat_id`` after the replies scheduled before it.
@@ -781,14 +810,19 @@ class HiveMindTelegramBridge:
         entry = self._chat_sends.get(chat_id)
         if entry is None:
             entry = self._chat_sends[chat_id] = [asyncio.Lock(), 0]
+        if entry[1] >= SENDS_PER_CHAT_MAX:
+            LOG.warning(f"{entry[1]} replies are waiting to be sent to chat {chat_id}; "
+                        f"dropping one more")
+            return
         entry[1] += 1
         task = asyncio.current_task()
         if task is not None:
             self._sending.add(task)
         try:
             async with entry[0]:
+                budget = [0.0, 0]  # flood waits and retries, for the whole reply
                 for piece in split_message(text, TELEGRAM_LIMIT):
-                    await self._send_one(chat_id, piece)
+                    await self._send_one(chat_id, piece, budget)
         finally:
             entry[1] -= 1
             if entry[1] == 0:
@@ -801,31 +835,35 @@ class HiveMindTelegramBridge:
         for question in self._waiting_in(chat_id):
             question.wake.set()
 
-    async def _send_one(self, chat_id: int, text: str) -> None:
+    async def _send_one(self, chat_id: int, text: str, budget: Optional[List] = None) -> None:
         """sendMessage, waiting out Telegram's flood control when it asks to.
 
-        Waits exactly what Telegram asks for, while the waits for this
-        message stay within ``RETRY_AFTER_BUDGET``; beyond that the reply is
-        given up at once (the error is logged by the caller).
+        Waits exactly what Telegram asks for, while the waits for the reply
+        stay within ``RETRY_AFTER_BUDGET`` and ``RETRY_AFTER_MAX_RETRIES``;
+        beyond that the reply is given up at once (the error is logged by the
+        caller). ``budget`` (seconds waited, retries) is shared by all the
+        pieces of one split reply.
         """
-        waited = 0.0
+        if budget is None:
+            budget = [0.0, 0]
         while True:
             try:
                 await self.app.bot.send_message(chat_id=chat_id, text=text)
                 return
             except RetryAfter as error:
+                budget[1] += 1
                 with warnings.catch_warnings():  # int vs timedelta deprecation
                     warnings.simplefilter("ignore")
                     after = error.retry_after
                 seconds = max(after.total_seconds() if isinstance(after, timedelta)
                               else float(after), 0.0)
-                if waited + seconds > RETRY_AFTER_BUDGET:
+                if budget[1] > RETRY_AFTER_MAX_RETRIES or budget[0] + seconds > RETRY_AFTER_BUDGET:
                     LOG.warning(f"Telegram asks to wait {seconds:g} s before writing to "
                                 f"chat {chat_id}; giving the reply up")
                     raise
                 LOG.info(f"Telegram asks to wait {seconds:g} s before writing to chat {chat_id}")
                 await asyncio.sleep(seconds)
-                waited += seconds
+                budget[0] += seconds
 
     # ------------------------------------------------------------------
     # waiting for the hub: "typing…", then a line if no answer comes
@@ -849,7 +887,10 @@ class HiveMindTelegramBridge:
         question = _Question(chat_id, session_id, user_id, language,
                              loop.time() + self.reply_timeout, next(self._numbers))
         self._pending.setdefault(key, deque()).append(question)
-        self._remember_session(key)
+        question.asked_at = loop.time()
+        while self._recent and question.asked_at - self._recent[0].asked_at > REFUSAL_WINDOW:
+            self._recent.popleft()
+        self._recent.append(question)
         question.task = loop.create_task(self._wait_for_answer(question))
         return question
 
@@ -898,61 +939,75 @@ class HiveMindTelegramBridge:
                    for q in queue]
         return sorted(waiting, key=lambda q: q.number)
 
-    def _remember_session(self, key: Tuple[int, Optional[str]]) -> None:
-        now = time.monotonic()
-        for old in [k for k, at in self._seen.items() if now - at >= SEEN_KEPT]:
-            del self._seen[old]
-            self._replied.pop(old, None)
-        self._seen[key] = now
+    def _question_for(self, chat_id: int, session_id: Optional[str],
+                      user_id: Optional[int]) -> Optional["_Question"]:
+        """The waiting question a hub message is about, if any.
 
-    def _oldest_answered_by(self, chat_id: int,
-                            session_id: Optional[str]) -> Optional["_Question"]:
-        """The question a hub message for ``session_id`` in ``chat_id`` is about.
-
-        The oldest waiting question of that session. For a session with
-        nothing waiting that asked recently, none: the message is another
-        sentence of an answer, or a late answer, and ends no one else's
-        wait. For no session (or one the bridge never saw), the oldest
-        question waiting in the chat, so other people's waits go on.
+        The hub echoes the question's context: its session and the person
+        who asked it. The question is the oldest one waiting from that
+        person in that session; with no person, the oldest one waiting in
+        the session; with no session either, the oldest one waiting in the
+        chat (from that person, when known). A message for a person or a
+        session with nothing waiting (another sentence of an answer, or a
+        late answer) is about none, and ends no one's wait.
         """
-        queue = self._pending.get((chat_id, session_id))
-        if queue:
-            return queue[0]
-        if session_id is not None and (chat_id, session_id) in self._seen:
-            return None
-        waiting = self._waiting_in(chat_id)
+        if session_id is not None:
+            waiting = list(self._pending.get((chat_id, session_id), ()))
+        else:
+            waiting = self._waiting_in(chat_id)
+        if user_id is not None:
+            waiting = [q for q in waiting if q.user_id == user_id]
         return waiting[0] if waiting else None
 
-    def _reply_came(self, chat_id: int, session_id: Optional[str]) -> None:
-        """A reply (``speak``, or the no-answer line) for ``session_id``: ends one wait."""
-        question = self._oldest_answered_by(chat_id, session_id)
-        if question is not None:
-            self._end(question)
-            key = (chat_id, session_id)
-            self._replied[key] = self._replied.get(key, 0) + 1
-            self._remember_session(key)
+    def _reply_came(self, chat_id: int, session_id: Optional[str],
+                    user_id: Optional[int] = None, ticket: Optional[dict] = None) -> None:
+        """A reply (``speak``, or the no-answer line): ends one question's wait."""
+        question = self._question_for(chat_id, session_id, user_id)
+        if question is None:
+            return
+        self._end(question)
+        if ticket is not None:
+            ticket["question"] = question
+        now = time.monotonic()
+        for old in [k for k, (_, at) in self._replied.items() if now - at >= REPLIED_KEPT]:
+            del self._replied[old]
+        key = (chat_id, session_id, user_id)
+        count = self._replied.get(key, [0, now])[0]
+        self._replied[key] = [count + 1, now]
 
-    def _handled(self, chat_id: int, session_id: Optional[str]) -> None:
-        """The hub's ``ovos.utterance.handled`` for ``session_id``.
+    def _handled(self, chat_id: int, session_id: Optional[str],
+                 user_id: Optional[int] = None) -> None:
+        """The hub's ``ovos.utterance.handled``.
 
         After a reply it only closes that reply's question (already ended).
         Without one, a question was dealt with silently (a cancelled
         utterance): its wait ends, quietly.
         """
-        key = (chat_id, session_id)
-        if self._replied.get(key):
-            self._replied[key] -= 1
+        key = (chat_id, session_id, user_id)
+        replied = self._replied.get(key)
+        if replied and replied[0] > 0:
+            replied[0] -= 1
+            if not replied[0]:
+                del self._replied[key]
             return
-        question = self._oldest_answered_by(chat_id, session_id)
+        question = self._question_for(chat_id, session_id, user_id)
         if question is not None:
             self._end(question)
 
     def _denied(self) -> None:
-        # The refusal names no chat: only when exactly one question waits
-        # can it be that one.
-        waiting = [q for queue in self._pending.values() for q in queue]
-        if len(waiting) == 1:
-            self._give_up(waiting[0], waiting[0].chat_id, waiting[0].language)
+        """A refusal names no question: pin it only on the one asked just now.
+
+        The hub refuses at admission, so its refusal follows the question at
+        once. When exactly one question was asked in the last
+        ``REFUSAL_WINDOW`` seconds and it still waits, it is that one;
+        otherwise the reply timeout tells the person.
+        """
+        now = asyncio.get_running_loop().time()
+        while self._recent and now - self._recent[0].asked_at > REFUSAL_WINDOW:
+            self._recent.popleft()
+        if len(self._recent) == 1 and not self._recent[0].done:
+            question = self._recent[0]
+            self._give_up(question, question.chat_id, question.language)
 
     def _give_up(self, question: Optional["_Question"], chat_id: int,
                  language: Optional[str]) -> None:
@@ -1011,7 +1066,7 @@ class _Question:
     """One question waiting for the hub's answer."""
 
     __slots__ = ("chat_id", "session_id", "user_id", "language", "deadline",
-                 "number", "done", "wake", "task")
+                 "number", "done", "wake", "task", "asked_at")
 
     def __init__(self, chat_id: int, session_id: str, user_id: Optional[int],
                  language: Optional[str], deadline: float, number: int):
@@ -1021,6 +1076,7 @@ class _Question:
         self.language = language  # the language their app reports
         self.deadline = deadline
         self.number = number  # order of asking, across the bridge
+        self.asked_at = 0.0  # loop time
         self.done = False
         self.wake = asyncio.Event()
         self.task: Optional[asyncio.Task] = None
@@ -1030,6 +1086,13 @@ def _language_code(sender) -> Optional[str]:
     """The language the sender's Telegram app reports, when it does."""
     code = getattr(sender, "language_code", None)
     return code if isinstance(code, str) and code else None
+
+
+def _asker_of(message: Message) -> Optional[int]:
+    """The Telegram user id of the person a hub message answers, when it says."""
+    user = message.context.get("user")
+    user_id = user.get("telegram_user_id") if isinstance(user, dict) else None
+    return user_id if isinstance(user_id, int) else None
 
 
 def _session_of(message: Message) -> Optional[str]:

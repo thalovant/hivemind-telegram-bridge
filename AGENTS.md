@@ -138,8 +138,9 @@ inventing a new pattern here.
 - **Return upstream responses verbatim.** `handle_speak()` forwards
   `message.data["utterance"]` to Telegram unmodified; do not reformat,
   truncate, or add bridge-specific decoration to hub-authored text. A reply
-  longer than one Telegram message is split (`split.py`) with every
-  character kept, never shortened. The bridge-authored lines are the ones
+  longer than one Telegram message is split (`split.py`) in order, never
+  shortened (only a whitespace run longer than a whole message, which
+  Telegram could not send, loses what does not fit). The bridge-authored lines are the ones
   in `lines.py`, said only when the hub sent nothing to relay: no skill
   matched (`complete_intent_failure`), or no answer came (reply timeout,
   hub unreachable, refusal). Keep them short and add a language to every

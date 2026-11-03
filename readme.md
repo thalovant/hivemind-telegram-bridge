@@ -150,12 +150,12 @@ every start is refused.
   arrive: the hub's bus thread never waits for Telegram, and the Telegram
   loop never waits for the hub. Replies to one chat keep their order; a
   reply longer than Telegram's 4096 characters goes out as several
-  messages, every character kept. Flood control (429) is waited out
+  messages, in order. Flood control (429) is waited out
   exactly as Telegram asks while the waits for one reply stay within
   120 s; a reply held back longer is given up and logged.
 - Shows "typing…" from the moment a question is read until the hub
   answers. With no answer within `--reply-timeout` (60 s), or at once when
-  the hub cannot be reached or refuses the only question waiting, it says
+  the hub cannot be reached or refuses the question just asked, it says
   it cannot answer right now. When no skill matches
   (`complete_intent_failure`) it says it does not know. These lines are
   in the sender's Telegram language when there is one for it, else

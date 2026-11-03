@@ -76,8 +76,8 @@ def test_burst_replies_do_not_queue_behind_each_other(telegram_api):
                   if params.get("chat_id") == chat) - telegram_api.served[n]
               for n, chat in enumerate(chats, start=1)
               if any(params.get("chat_id") == chat for _, _, params in telegram_api.calls_to("sendChatAction"))]
-    if typing:  # "typing…" shown after the message was read
-        numbers["typing_median"], numbers["typing_max"] = statistics.median(typing), max(typing)
+    assert len(typing) == len(chats), "not every chat got typing…"
+    numbers["typing_median"], numbers["typing_max"] = statistics.median(typing), max(typing)
     _report("burst", numbers)
     hub.close()
     assert numbers["inbound_max"] < LIMIT
@@ -91,9 +91,11 @@ def test_a_slow_hub_send_does_not_hold_up_replies(telegram_api):
          [text_update(1, "first", chat_id=201, user_id=1),
           text_update(2, "second", chat_id=202, user_id=2)], 2)
 
-    sent_at, chat = hub.replies[0]
-    numbers = {"outbound_first": _first_send(telegram_api, chat) - sent_at,
+    (first_at, first_chat), (second_at, second_chat) = hub.replies[:2]
+    numbers = {"outbound_first": _first_send(telegram_api, first_chat) - first_at,
+               "outbound_second": _first_send(telegram_api, second_chat) - second_at,
                "bus_held_max": max(hub.held)}
     _report("slow-hub-socket", numbers)
     hub.close()
     assert numbers["outbound_first"] < LIMIT, "a reply waited for a hub send on the loop"
+    assert numbers["outbound_second"] < LIMIT, "the second reply waited"

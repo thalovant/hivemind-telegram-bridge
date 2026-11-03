@@ -55,6 +55,7 @@ class FakeTelegramAPI:
         self.latency: Dict[str, float] = {}
         self.flood: Dict[str, int] = {}  # method -> how many calls get 429 first
         self.flood_wait = 1  # the retry_after those 429s ask for
+        self.refuse_text: set = set()  # sendMessage texts answered 400
         self.served: Dict[int, float] = {}  # update_id -> when getUpdates returned it
         self._pending: List[dict] = []
         self._lock = threading.Lock()
@@ -81,6 +82,9 @@ class FakeTelegramAPI:
             return 429, json.dumps({"ok": False, "error_code": 429,
                                     "description": f"Too Many Requests: retry after {self.flood_wait}",
                                     "parameters": {"retry_after": self.flood_wait}}).encode()
+        if api_method == "sendMessage" and params.get("text") in self.refuse_text:
+            return 400, json.dumps({"ok": False, "error_code": 400,
+                                    "description": "Bad Request: chat not found"}).encode()
         if api_method == "sendMessage" and len(str(params.get("text", "")).encode("utf-16-le")) > 8192:
             return 400, json.dumps({"ok": False, "error_code": 400,
                                     "description": "Bad Request: message is too long"}).encode()

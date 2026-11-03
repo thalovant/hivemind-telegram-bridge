@@ -96,13 +96,22 @@ def test_a_rejected_token_frees_the_health_port_and_the_http_clients(telegram_ap
     original = HTTPXRequest.shutdown
 
     async def shutdown(self):
+        await original(self)  # recorded only once it is really closed
         closed.append(self)
-        await original(self)
 
     monkeypatch.setattr(HTTPXRequest, "shutdown", shutdown)
     telegram_api.status["getMe"] = 401
+    servers = []
+    real_health_server = bridge_module.HealthServer
+
+    def recording_health_server(*args, **kwargs):
+        servers.append(real_health_server(*args, **kwargs))
+        return servers[-1]
+
+    monkeypatch.setattr(bridge_module, "HealthServer", recording_health_server)
     bridge = HiveMindTelegramBridge(token=TOKEN, client=hub, health_port=0)
     with pytest.raises(TokenRejected):
         bridge.start()
     assert bridge._health is None
+    assert servers and servers[0]._server.socket.fileno() == -1, "the health port stayed bound"
     assert set(map(id, bridge._own_requests)) <= set(map(id, closed))
