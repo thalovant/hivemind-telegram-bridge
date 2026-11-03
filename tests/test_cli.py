@@ -22,6 +22,7 @@ def test_everything_can_come_from_the_environment():
         "HIVEMIND_LANG": "fr-fr",
         "TELEGRAM_SESSION_SCOPE": "person",
         "BRIDGE_HEALTH_PORT": "8080",
+        "BRIDGE_REPLY_TIMEOUT": "45",
     })
     assert options == {
         "token": "tok",
@@ -36,6 +37,7 @@ def test_everything_can_come_from_the_environment():
         "require_mention": True,
         "session_scope": "person",
         "health_port": 8080,
+        "reply_timeout": 45.0,
     }
 
 
@@ -108,3 +110,11 @@ def test_the_session_scope_defaults_to_the_chat_and_rejects_anything_else():
     assert resolve_options(["--token", "tok", "--session-scope", "person"], {})["session_scope"] == "person"
     with pytest.raises(SystemExit):
         resolve_options(["--token", "tok"], {"TELEGRAM_SESSION_SCOPE": "room"})
+
+
+def test_the_reply_timeout_defaults_to_a_minute_and_must_be_a_number():
+    assert resolve_options(["--token", "tok"], {})["reply_timeout"] == 60.0
+    assert resolve_options(["--token", "tok", "--reply-timeout", "0"], {})["reply_timeout"] == 0.0
+    for wrong in ("soon", "-1", "inf", "nan"):
+        with pytest.raises(SystemExit):
+            resolve_options(["--token", "tok"], {"BRIDGE_REPLY_TIMEOUT": wrong})

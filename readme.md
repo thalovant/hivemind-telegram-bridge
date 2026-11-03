@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: settings from the environment and secret files, mention gating, per-person sessions, health endpoints.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
 
 # HiveMind Telegram Bridge
 
@@ -99,6 +99,7 @@ host could read it:
 | `--no-require-mention` | `TELEGRAM_REQUIRE_MENTION` (`true`/`false`) |
 | `--session-scope` | `TELEGRAM_SESSION_SCOPE` (`chat`/`person`) |
 | `--health-port` | `BRIDGE_HEALTH_PORT` |
+| `--reply-timeout` | `BRIDGE_REPLY_TIMEOUT` (seconds, default 60, `0` off) |
 | `--access-key` | `HIVEMIND_ACCESS_KEY` |
 | `--password` | `HIVEMIND_PASSWORD` |
 | `--host` | `HIVEMIND_HOST` |
@@ -145,8 +146,25 @@ every start is refused.
   message, carrying the Telegram chat id and user in the message
   context so the hub's `speak` reply can be routed back to the right
   chat.
-- Posts `speak` replies (and a fixed fallback line on
-  `hive.complete_intent_failure`) back into the originating chat.
+- Posts `speak` replies back into the originating chat, as soon as they
+  arrive: the hub's bus thread never waits for Telegram, and the Telegram
+  loop never waits for the hub. Replies to one chat keep their order; a
+  reply longer than Telegram's 4096 characters goes out as several
+  messages, in order. Flood control (429) is waited out
+  exactly as Telegram asks while the waits for one reply stay within
+  120 s; a reply held back longer is given up and logged.
+- Shows "typing…" from the moment a question is read until the hub
+  answers. With no answer within `--reply-timeout` (60 s), or at once when
+  the hub cannot be reached or refuses the question just asked, it says
+  it cannot answer right now. When no skill matches
+  (`complete_intent_failure`) it says it does not know. These lines are
+  in the sender's Telegram language when there is one for it, else
+  `HIVEMIND_LANG`, else English (`hivemind_telegram_bridge/lines.py`).
+- Does not answer a message sent more than 120 s before it is read (the
+  backlog Telegram hands over after a restart); it is still confirmed, so
+  it is never delivered again.
+- When Telegram refuses the bot token (401, at start or later), writes
+  `token_rejected` to `/dev/termination-log` and exits with status 3.
 
 ## Testing
 
@@ -155,7 +173,9 @@ pip install -e .[test]
 pytest tests/
 ```
 
-The test suite mocks both the Telegram `Application` and the HiveMind
-`HiveMessageBusClient`, so it runs without a live token or hub. It has
+Most tests mock both the Telegram `Application` and the HiveMind
+`HiveMessageBusClient`; the others (`tests/conftest.py`) run the real
+python-telegram-bot stack against a fake Bot API and a fake hub, so it
+all runs without a live token or hub. It has
 not been exercised against a real Telegram bot or a real HiveMind hub —
 that needs an actual bot token, which this repository does not have.

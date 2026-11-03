@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-02 - Motive: Thalovant fork set up: fixes on main, Thalovant CI and signed images, docs set added.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
 
 # hivemind-telegram-bridge
 
@@ -16,8 +16,11 @@ A HiveMind bridge for Telegram: a satellite whose input and output are a Telegra
 
 | File | What it holds |
 | --- | --- |
-| `hivemind_telegram_bridge/__init__.py` | `HiveMindTelegramBridge`: connection lifecycle, `addressed_text` (mention gating), `session_id`, `ready`, reply path |
-| `hivemind_telegram_bridge/__main__.py` | `resolve_options`: flags, environment variables, `*_FILE` secrets |
+| `hivemind_telegram_bridge/__init__.py` | `HiveMindTelegramBridge`: connection lifecycle, `addressed_text` (mention gating), `_is_stale`, `session_id`, `ready`, reply path (`speak`, `_send_in_order`), waiting for the hub (`_expect_answer`, `_wait_for_answer`, typing); `TokenRejected`, `report_token_rejected`, `_TokenWatch` (401 seen at any time) |
+| `hivemind_telegram_bridge/lines.py` | `bridge_line`: the bridge's own lines (no answer, cannot answer now) per language |
+| `hivemind_telegram_bridge/split.py` | `split_message`: a long reply as several messages, in order, walked by offset |
+| `hivemind_telegram_bridge/__main__.py` | `resolve_options`: flags, environment variables, `*_FILE` secrets; `main` turns a rejected token into `token_rejected` and exit status 3 |
+| `tests/conftest.py` | `FakeTelegramAPI` (stands in for the Bot API under python-telegram-bot), `FakeHub` (stands in for `HiveMessageBusClient`) |
 | `hivemind_telegram_bridge/health.py` | `HealthServer`: `/healthz` and `/readyz` |
 | `Dockerfile` | the image: unprivileged user, entrypoint without arguments |
 | `.github/workflows/ci.yml` | tests, lint, image smoke test, signed publish to `ghcr.io/thalovant/hivemind-telegram-bridge` |
