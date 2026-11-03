@@ -31,8 +31,10 @@ import asyncio
 import logging
 import re
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 from http import HTTPStatus
-from typing import Callable, Iterable, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 from hivemind_bus_client import (
     HiveMessage,
@@ -44,7 +46,7 @@ from ovos_utils.log import LOG
 
 from hivemind_telegram_bridge.health import HealthServer
 from telegram import Update
-from telegram.error import InvalidToken
+from telegram.error import InvalidToken, TelegramError
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -217,6 +219,16 @@ class HiveMindTelegramBridge:
         self._polling = threading.Event()
         self._started = False
         self._connected = threading.Event()
+        # Every hub send goes through this one thread: off the Telegram loop
+        # (a slow or reconnecting socket must not hold up replies), and one
+        # at a time, in order (the client's encrypted transport is not meant
+        # to be written from two threads at once).
+        self._hub_sender = ThreadPoolExecutor(max_workers=1,
+                                              thread_name_prefix="hivemind-send")
+        # chat id -> [lock, sends waiting]: replies to one chat go out in
+        # the order the hub spoke them; different chats do not wait for
+        # each other. Only touched on the Telegram loop.
+        self._chat_sends: Dict[int, List] = {}
 
     def _build_application(self, token: str) -> Application:
         """The Telegram Application, on a transport that reports a rejected token.
@@ -386,7 +398,16 @@ class HiveMindTelegramBridge:
                        "HiveMind yet")
             return
 
-        self.forward_to_hivemind(text, sender, chat.id)
+        # Awaited on the hub-send thread, never run on this loop: the loop
+        # keeps sending replies while the hub socket is slow.
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                self._hub_sender, self.forward_to_hivemind, text, sender, chat.id)
+        except Exception as error:
+            # emit() puts the whole message, text included, in some of its
+            # errors: name the kind of failure only.
+            LOG.warning(f"could not send a message from chat {chat.id} to the "
+                        f"hub: {type(error).__name__}")
 
     def addressed_text(self, message, chat) -> Optional[str]:
         """The text to forward, or ``None`` when the message is not for the bot.
@@ -419,6 +440,11 @@ class HiveMindTelegramBridge:
         return author is not None and bot_id is not None and getattr(author, "id", None) == bot_id
 
     def forward_to_hivemind(self, text: str, sender, chat_id: int) -> None:
+        """Emit ``text`` to the hub as an utterance from ``sender`` in ``chat_id``.
+
+        Blocking (it writes to the hub socket): ``handle_telegram_message``
+        runs it on the hub-send thread.
+        """
         username = (sender.username if sender and sender.username
                    else str(sender.id) if sender else "unknown")
         msg = Message(
@@ -462,27 +488,57 @@ class HiveMindTelegramBridge:
         self.speak("I don't know how to answer that", chat_id)
 
     def speak(self, text: str, chat_id: int) -> None:
-        """Post ``text`` back to ``chat_id``.
+        """Post ``text`` back to ``chat_id``, without waiting for Telegram.
 
         Called from the HiveMind bus's own thread, never from the
         asyncio loop Telegram's Application runs on. Scheduling the send
         with ``run_coroutine_threadsafe`` is what makes that safe -- an
         ``await`` called directly from a foreign thread would raise or
-        silently do nothing depending on timing.
+        silently do nothing depending on timing. It returns at once: the
+        bus thread also delivers every other hub message (and the client's
+        keepalive), so it never waits for a send; a failure is logged when
+        the send ends.
         """
-        if self._loop is None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
             LOG.warning("Telegram loop not running yet, dropping reply")
             return
         # The length, never the text: replies carry what people asked about,
         # and a debug log is kept, shipped and read far more widely than the chat.
         LOG.debug(f"Sending message to Telegram chat {chat_id}: {len(text)} characters")
-        future = asyncio.run_coroutine_threadsafe(
-            self.app.bot.send_message(chat_id=chat_id, text=text), self._loop
-        )
         try:
-            future.result(timeout=10)
-        except Exception:
-            LOG.exception(f"failed to send Telegram message to chat={chat_id}")
+            future = asyncio.run_coroutine_threadsafe(self._send_in_order(chat_id, text), loop)
+        except RuntimeError:  # the loop closed in between: shutting down
+            LOG.warning("Telegram loop stopped, dropping reply")
+            return
+        future.add_done_callback(partial(self._log_send_failure, chat_id))
+
+    async def _send_in_order(self, chat_id: int, text: str) -> None:
+        """Send ``text`` to ``chat_id`` after the replies scheduled before it."""
+        entry = self._chat_sends.get(chat_id)
+        if entry is None:
+            entry = self._chat_sends[chat_id] = [asyncio.Lock(), 0]
+        entry[1] += 1
+        try:
+            async with entry[0]:
+                await self.app.bot.send_message(chat_id=chat_id, text=text)
+        finally:
+            entry[1] -= 1
+            if entry[1] == 0:
+                self._chat_sends.pop(chat_id, None)
+
+    @staticmethod
+    def _log_send_failure(chat_id: int, future: Future) -> None:
+        if future.cancelled():
+            return
+        error = future.exception()
+        if error is None:
+            return
+        # Telegram's own description ("Forbidden: bot was blocked by the
+        # user") helps and holds no message text; anything else, the kind only.
+        detail = f": {error}" if isinstance(error, TelegramError) else ""
+        LOG.warning(f"failed to send a reply to Telegram chat {chat_id}: "
+                    f"{type(error).__name__}{detail}")
 
 
 __all__ = ["HiveMindTelegramBridge", "TokenRejected", "report_token_rejected", "platform"]

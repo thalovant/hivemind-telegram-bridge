@@ -133,6 +133,7 @@ class FakeHub:
         self.handlers: Dict[str, Callable] = {}
         self.emitted: List[tuple] = []
         self.replies: List[tuple] = []
+        self.held: List[float] = []  # how long each bus handler kept the bus thread
         self.handshake_event = threading.Event()
         self._bus: "queue.PriorityQueue" = queue.PriorityQueue()
         self._order = 0
@@ -183,7 +184,9 @@ class FakeHub:
                 self.replies.append((due, context.get("chat_id")))
             handler = self.handlers.get(msg_type)
             if handler is not None:
+                started = time.monotonic()
                 handler(Message(msg_type, data, context))
+                self.held.append(time.monotonic() - started)
 
 
 @pytest.fixture
