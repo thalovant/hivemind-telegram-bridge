@@ -226,3 +226,39 @@ def test_stopping_lets_a_reply_being_sent_finish(telegram_api):
     assert wait_for(lambda: telegram_api.calls_to("sendMessage"), timeout=5)
     made.stop()
     assert len(telegram_api.done_to("sendMessage")) == 3
+
+
+def test_a_question_that_waited_past_the_timeout_for_the_hub_is_not_sent(running):
+    """Told "cannot answer" already, the person must not get an answer after that."""
+    hub = FakeHub(emit_delay=0.6)
+    bridge = running(hub, reply_timeout=0.3)
+    bridge.api.push(text_update(1, "first", chat_id=1, user_id=1),
+                    text_update(2, "second", chat_id=2, user_id=2))
+    assert wait_for(lambda: bridge.sent(2), timeout=3)  # told at the timeout
+    time.sleep(1.0)
+    assert [message.context["chat_id"] for _, message in hub.emitted] == [1]
+
+
+def test_a_hub_that_does_not_keep_up_gets_no_endless_queue(running, monkeypatch):
+    monkeypatch.setattr(bridge_module, "HUB_BACKLOG_MAX", 1)
+    hub = FakeHub(emit_delay=0.5)
+    bridge = running(hub, reply_timeout=30)
+    bridge.api.push(text_update(1, "first", chat_id=1, user_id=1),
+                    text_update(2, "second", chat_id=2, user_id=2))
+    assert wait_for(lambda: bridge.sent(2), timeout=2)
+    assert bridge.api.calls_to("sendMessage")[0][0] - bridge.api.served[2] < 0.3
+    assert bridge.sent(2) == [LINES["en"][UNAVAILABLE]]
+    time.sleep(0.8)
+    assert [message.context["chat_id"] for _, message in hub.emitted] == [1]
+
+
+def test_a_refusal_is_not_pinned_on_a_wait_shared_by_several_questions(running):
+    """Chat scope: two people's questions share one wait; the refused one is unknown."""
+    bridge = running(reply_timeout=30)
+    bridge.api.push(text_update(1, "@HiveBot one", chat_id=-100, user_id=1, chat_type="group"),
+                    text_update(2, "@HiveBot two", chat_id=-100, user_id=2, chat_type="group"))
+    assert wait_for(lambda: len(bridge.hub.emitted) == 2)
+    bridge.hub.send("hive.policy.denied", {"denied_type": "recognizer_loop:utterance"}, {})
+    time.sleep(0.3)
+    assert bridge.sent(-100) == []
+    assert len(bridge.bridge._waits) == 1

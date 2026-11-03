@@ -32,7 +32,7 @@ When Telegram answers 401 Unauthorized, at start (getMe) or later while polling,
 
 ## Why did the bot not answer what I sent while it was down?
 
-A message sent more than 120 s before the bridge reads it is not answered (`HiveMindTelegramBridge._is_stale`, `MAX_MESSAGE_AGE`): after a restart Telegram hands over up to 24 hours of backlog. It is still confirmed, so Telegram never sends it again. A message sent shortly before the start is answered.
+A message sent more than 120 s before the bridge reads it is not answered (`HiveMindTelegramBridge._is_stale`, `MAX_MESSAGE_AGE`): after a restart Telegram hands over up to 24 hours of backlog. It is still confirmed, so Telegram never sends it again. A message sent shortly before the start is answered. Each drop is logged at INFO with the message's age (never its text): if new messages are dropped too, the host clock is wrong; it must stay within 120 s of Telegram's.
 
 ## What does the bot say when the hub cannot answer, and in which language?
 
@@ -48,7 +48,7 @@ As soon as the hub's `speak` arrives: `speak()` schedules the send on the Telegr
 
 ## What about a reply longer than a Telegram message?
 
-It is sent as several messages, in order, with every character kept (`hivemind_telegram_bridge/split.py`, `split_message`); cuts fall on paragraph, line, sentence or word boundaries. A reply held back by flood control (429) is sent again after exactly the wait Telegram asks for, as long as the waits for that reply add up to 120 s at most (`RETRY_AFTER_BUDGET`); beyond that it is given up and logged, so the chat's later replies do not queue behind it.
+It is sent as several messages, in order, with every character kept (`hivemind_telegram_bridge/split.py`, `split_message`); cuts fall on paragraph, line, sentence or word boundaries; only a piece with no such boundary in its second half (a word longer than the limit) is cut mid-word. A reply held back by flood control (429) is sent again after exactly the wait Telegram asks for, as long as the waits for that reply add up to 120 s at most (`RETRY_AFTER_BUDGET`); beyond that it is given up and logged, so the chat's later replies do not queue behind it.
 
 ## The log says the hub does not allow this bridge to send `recognizer_loop:utterance`
 

@@ -78,3 +78,20 @@ def test_the_age_can_be_changed():
     made, client = _bridge(max_message_age=600)
     asyncio.run(made.handle_telegram_message(_update(300), MagicMock()))
     assert client.emit.call_count == 1
+
+
+def test_a_dropped_message_is_logged_with_its_age_not_its_text(monkeypatch):
+    """At INFO: if every new message is dropped, a wrong host clock is the likely cause."""
+    import hivemind_telegram_bridge as bridge_module
+
+    lines = []
+    log = MagicMock()
+    for level in ("debug", "info", "warning", "error", "exception"):
+        getattr(log, level).side_effect = (
+            lambda *a, _level=level, **k: lines.append((_level, " ".join(map(str, a)))))
+    monkeypatch.setattr(bridge_module, "LOG", log)
+    made, client = _bridge()
+    asyncio.run(made.handle_telegram_message(_update(300), MagicMock()))
+    dropped = [(level, text) for level, text in lines if "s ago" in text]
+    assert dropped and dropped[0][0] == "info"
+    assert "300 s ago" in dropped[0][1] and "hello" not in dropped[0][1]

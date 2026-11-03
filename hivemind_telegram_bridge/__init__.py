@@ -130,6 +130,9 @@ ENDED_KEPT = 600.0
 #: The "cannot answer right now" line is said at most once per person and
 #: chat in this many seconds, however many questions go unanswered.
 UNAVAILABLE_EVERY = 30.0
+#: Questions waiting for the hub-send thread at most. Beyond that the hub
+#: is not keeping up: the person is told at once instead of queueing more.
+HUB_BACKLOG_MAX = 64
 
 #: What the bridge writes to the termination log when Telegram refuses the
 #: bot token, so the platform can ask for a new token instead of restarting
@@ -322,6 +325,7 @@ class HiveMindTelegramBridge:
         self._typing_at: Dict[int, float] = {}
         self._unavailable_at: Dict[Tuple[int, Optional[int]], float] = {}
         self._ended: Dict[Tuple[int, str], float] = {}
+        self._hub_backlog = 0  # questions submitted to the hub-send thread, not yet sent
         self._sending: Set[asyncio.Task] = set()
         self._background: Set[asyncio.Task] = set()
         self._told_about_acl = False  # bus thread only
@@ -518,14 +522,21 @@ class HiveMindTelegramBridge:
                        "HiveMind yet")
             return
 
-        # Sent on the hub-send thread, never on this loop, so the loop keeps
-        # sending replies while the hub socket is slow; "typing…" starts
-        # while it goes.
-        sent = asyncio.get_running_loop().run_in_executor(
-            self._hub_sender, self.forward_to_hivemind, text, sender, chat.id)
         session_id = self.session_id(chat.id, sender)
         user_id = getattr(sender, "id", None)
         language = _language_code(sender)
+        if self._hub_backlog >= HUB_BACKLOG_MAX:
+            LOG.warning(f"{self._hub_backlog} questions are waiting to be sent to "
+                        f"the hub; not queueing one more from chat {chat.id}")
+            self._give_up(chat.id, session_id, user_id, language)
+            return
+        # Sent on the hub-send thread, never on this loop, so the loop keeps
+        # sending replies while the hub socket is slow; "typing…" starts
+        # while it goes.
+        self._hub_backlog += 1
+        sent = asyncio.get_running_loop().run_in_executor(
+            self._hub_sender, self._forward_unless_late, time.monotonic(),
+            text, sender, chat.id)
         self._expect_answer(chat.id, session_id, user_id, language)
         try:
             await sent
@@ -535,6 +546,26 @@ class HiveMindTelegramBridge:
             LOG.warning(f"could not send a message from chat {chat.id} to the "
                         f"hub: {type(error).__name__}")
             self._give_up(chat.id, session_id, user_id, language)
+        finally:
+            self._hub_backlog -= 1
+
+    def _forward_unless_late(self, read_at: float, text: str, sender, chat_id: int) -> bool:
+        """``forward_to_hivemind``, unless the question waited too long to be sent.
+
+        When the hub socket is slow, questions queue for the hub-send thread.
+        One that waited past the reply timeout has already been told the
+        bridge cannot answer (or, with waiting off, is older than
+        ``max_message_age``): sending it now would bring an answer after
+        that, so it is dropped.
+        """
+        limit = self.reply_timeout if self.reply_timeout > 0 else self.max_message_age
+        waited = time.monotonic() - read_at
+        if waited >= limit:
+            LOG.info(f"not sending a question from chat {chat_id} that waited "
+                     f"{waited:.0f} s for the hub")
+            return False
+        self.forward_to_hivemind(text, sender, chat_id)
+        return True
 
     def _is_stale(self, message) -> bool:
         """Whether ``message`` was sent more than ``max_message_age`` ago.
@@ -550,7 +581,10 @@ class HiveMindTelegramBridge:
         age = time.time() - sent.timestamp()
         if age <= self.max_message_age:
             return False
-        LOG.debug(f"not answering a message sent {age:.0f} s ago")
+        # INFO, not DEBUG: if every new message is dropped, the host clock is
+        # probably wrong, and this line is how an operator finds out.
+        LOG.info(f"not answering a message sent {age:.0f} s ago (older than "
+                 f"{self.max_message_age:g} s; the host clock must be right)")
         return True
 
     def addressed_text(self, message, chat) -> Optional[str]:
@@ -815,6 +849,7 @@ class HiveMindTelegramBridge:
             wait = self._waits[key] = _Wait()
             wait.task = loop.create_task(self._wait_for_answer(key, wait))
         wait.deadline = loop.time() + self.reply_timeout
+        wait.questions += 1
         # the line, if it comes, answers the latest question
         wait.user_id, wait.language = user_id, language
         wait.wake.set()
@@ -874,9 +909,13 @@ class HiveMindTelegramBridge:
                 wait.wake.set()
 
     def _denied(self) -> None:
+        # Only when the refusal can only be for one question: one wait, and
+        # one question in it (in a chat-scope group several people can share
+        # a wait, and the refused one may not be the latest).
         if len(self._waits) == 1:
             (key, wait), = self._waits.items()
-            self._give_up(key[0], key[1], wait.user_id, wait.language)
+            if wait.questions == 1:
+                self._give_up(key[0], key[1], wait.user_id, wait.language)
 
     def _give_up(self, chat_id: int, session_id: str, user_id: Optional[int],
                  language: Optional[str]) -> None:
@@ -939,7 +978,7 @@ class HiveMindTelegramBridge:
 class _Wait:
     """A question waiting for the hub's answer."""
 
-    __slots__ = ("deadline", "answered", "wake", "task", "user_id", "language")
+    __slots__ = ("deadline", "answered", "wake", "task", "user_id", "language", "questions")
 
     def __init__(self):
         self.deadline = 0.0
@@ -948,6 +987,7 @@ class _Wait:
         self.task: Optional[asyncio.Task] = None
         self.user_id: Optional[int] = None  # who asked the latest question
         self.language: Optional[str] = None  # and the language their app reports
+        self.questions = 0  # questions asked since the wait began
 
 
 def _language_code(sender) -> Optional[str]:
