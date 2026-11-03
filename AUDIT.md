@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: sections 3 and 4 fixed; findings 8-17 added (fixed in this pass, or open and low).
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: sections 3 and 4 fixed; findings 8-18 added (fixed in this pass, or open and low).
 
 # Audit: hivemind-telegram-bridge
 
@@ -83,3 +83,7 @@ Evidence: `python -m pytest tests -q` (93 passed, 2026-11-03, Python 3.12 and 3.
 
 - **Where:** `hivemind_telegram_bridge/__init__.py:200` (`session_scope: str = "chat"`).
 - **Finding:** the bridge contract names `person` as the default; this bridge defaults to `chat` and the platform sets `TELEGRAM_SESSION_SCOPE`. Status: open, by design until the platform changes its default.
+
+## 18. Every start warned about hub permissions
+
+- **Fixed 2026-11-03.** `start()` logged a WARNING that a fresh client is denied every message type until an admin runs `hivemind-core allow-msg ...`. On a managed hub the platform grants `recognizer_loop:utterance`, so the line was false and sent readers of the log the wrong way. The hint is now logged once, as a WARNING, only when the hub refuses an utterance with `hive.policy.denied` code `acl_disallowed_type` (`HiveMindTelegramBridge.handle_denied`, `ACL_DISALLOWED_TYPE`). Tests: `tests/test_acl_hint.py`.

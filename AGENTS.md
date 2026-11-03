@@ -126,8 +126,10 @@ inventing a new pattern here.
   recognizer_loop:utterance <client_id>` (and usually `speak`). This bridge
   has no way to grant itself permissions and must not try to work around a
   denial locally — a silently dropped message on the hub side is the hub
-  doing its job, not a bug here. `--allowed-chat` is a separate, bridge-side
-  filter over which Telegram chats may originate traffic; it is not a
+  doing its job, not a bug here. The hub says so with `hive.policy.denied`
+  (code `acl_disallowed_type`); the bridge logs the grant hint then, once,
+  and never at start (a managed hub grants the type itself).
+  `--allowed-chat` is a separate, bridge-side filter over which Telegram chats may originate traffic; it is not a
   substitute for hub-side message-type ACLs.
 - **Rejected credentials must fail fast.** A bounded
   `handshake_max_retries` is what turns "wrong access key/password" into a

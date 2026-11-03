@@ -50,3 +50,7 @@ As soon as the hub's `speak` arrives: `speak()` schedules the send on the Telegr
 
 It is sent as several messages, in order, with every character kept (`hivemind_telegram_bridge/split.py`, `split_message`); cuts fall on paragraph, line, sentence or word boundaries. A reply held back by flood control (429) is sent again after the wait Telegram asks for.
 
+## The log says the hub does not allow this bridge to send `recognizer_loop:utterance`
+
+The hub refused a question with `hive.policy.denied`, code `acl_disallowed_type`: its message-type ACL does not list `recognizer_loop:utterance` for this client. On a self-managed hub an admin runs `hivemind-core allow-msg recognizer_loop:utterance <client_id>` (and `speak`); on a managed hub the platform grants it, so the line means the grant is missing. The bridge logs it once, and only after such a refusal (`HiveMindTelegramBridge.handle_denied`); it no longer warns about it at every start.
+
