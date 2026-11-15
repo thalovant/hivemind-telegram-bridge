@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
-
 # Quick facts: hivemind-telegram-bridge
 
 | Key | Value |

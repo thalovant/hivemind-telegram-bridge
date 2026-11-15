@@ -1,6 +1,8 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: sections 3 and 4 fixed; findings 8-19 added (fixed in this pass, or open and low), review findings in 19.
-
 # Audit: hivemind-telegram-bridge
+
+## 2026-11-15 - Per-file author/date/motive headers
+
+Finding: 8 files carried an author/date/motive header line that the owner has withdrawn. State: fixed in this change (a case-insensitive `git grep` for the header keyword is empty). No code path was touched, so no test result changes; the repository's CI on the pull request is the test of record.
 
 Evidence: `python -m pytest tests -q` (93 passed, 2026-11-03, Python 3.12 and 3.14) and reading the code at commit `8e0ba9456de8` (the line numbers below refer to it). Sections 1-7 were first written against `cb7ca5f5e458`.
 

@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: reply-off-the-bus-thread and localized lines done; hub refusal context, /start, edits and termination reasons proposed.
-
 # Suggestions: hivemind-telegram-bridge
 
 ## Per-person rate limit in the bridge
