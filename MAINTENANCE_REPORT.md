@@ -1,6 +1,16 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
-
 # Maintenance report: hivemind-telegram-bridge
+
+## 2026-11-15 - Removed the per-file author/date/motive headers
+
+Rationale: the workspace owner withdrew the per-file author/date/motive header convention (hard rule: no such header anywhere). Removed the header line (and the blank line after it) from every file that carried one, 8 files in this change; and removed the rule that every Markdown file starts with such a header line from `AGENTS.md`. No code, behaviour or documentation content changed; only the header lines.
+
+Verification: a case-insensitive `git grep` for the header keyword (the two words "last" and "edit" joined by a space) finds nothing after the change; `git diff --stat` shows deletions only.
+
+### Transparency report
+
+- **AI model**: Claude Sonnet 5.5 (Claude Code).
+- **Actions taken**: ran a script that deletes the header line (plain, in `<!-- -->` or `/* */` comments, or marked as a previous header) and the blank line that followed a leading header; edited this report and AUDIT.md.
+- **Oversight**: requested by the owner; the diff was reviewed as deletions only; CI runs on the pull request.
 
 ## 2026-11-03: Polish pass (solid, fast)
 

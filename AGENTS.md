@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
-
 # This is the Thalovant fork
 
 The rules in this section win over anything below them, which is upstream's
@@ -16,8 +14,7 @@ guidance kept for context:
   workflow, a CI run on the pull request.
 - Update QUICK_FACTS.md, FAQ.md, MAINTENANCE_REPORT.md, AUDIT.md and
   SUGGESTIONS.md with every change.
-- Every Markdown file starts with a `Last Edit: <author> - <date> - Motive:
-  <summary>` line, and MAINTENANCE_REPORT.md entries are dated and carry a
+- MAINTENANCE_REPORT.md entries are dated and carry a
   transparency report for AI-assisted work. This is the Thalovant workspace
   convention and replaces upstream's "timeless text, no dates" rule below for
   this fork's documentation.

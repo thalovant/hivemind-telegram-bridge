@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Polish pass: rejected token reported, Telegram and hub never wait for each other, stale messages, localized lines, typing..., long replies, flood control.
-
 # hivemind-telegram-bridge
 
 A HiveMind bridge for Telegram: a satellite whose input and output are a Telegram bot instead of a microphone. Messages addressed to the bot become `recognizer_loop:utterance` on the hub; `speak` replies go back to the same chat.
